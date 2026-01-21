@@ -1,0 +1,9 @@
+nba_api
+pandas
+numpy
+scipy
+unidecode
+requests
+beautifulsoup4
+flask
+gunicorn

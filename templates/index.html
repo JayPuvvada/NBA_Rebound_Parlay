@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA Rebound AI</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <div class="container">
+        
+        <!-- HEADER -->
+        <header>
+            <div class="logo">🏀 NBA Rebound AI</div>
+            <p class="subtitle">Advanced Projection Model & Edge Finder</p>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <div class="main-grid">
+            
+            <!-- LEFT: INPUT FORM -->
+            <section class="card input-section">
+                <h2>Game Details</h2>
+                <form id="predict-form">
+                    
+                    <div class="form-group">
+                        <label for="player">Player Name</label>
+                        <input type="text" id="player" name="player" placeholder="e.g. Nikola Jokic" required autocomplete="off">
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="opponent">Opponent</label>
+                            <input type="text" id="opponent" name="opponent" placeholder="e.g. BOS" required maxlength="3" style="text-transform: uppercase;">
+                        </div>
+                        <div class="form-group">
+                            <label for="spread">Spread</label>
+                            <input type="number" id="spread" name="spread" placeholder="-5.5" step="0.5">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="line">Betting Line (O/U)</label>
+                            <input type="number" id="line" name="line" placeholder="10.5" step="0.5">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="matchup">Matchup Override (Optional)</label>
+                        <input type="text" id="matchup" name="matchup" placeholder="e.g. Al Horford">
+                    </div>
+
+                    <button type="submit" id="submit-btn">
+                        <span class="btn-text">Run Simulation</span>
+                        <div class="loader" id="loader"></div>
+                    </button>
+                    
+                    <div id="error-msg" class="error hidden"></div>
+
+                </form>
+            </section>
+
+            <!-- RIGHT: RESULTS -->
+            <section class="card results-section hidden" id="results-card">
+                <div class="results-header">
+                    <div class="player-title">
+                        <h1 id="res-player">Player Name</h1>
+                        <span id="res-opp">vs OPP</span>
+                    </div>
+                    <div class="projection-box">
+                        <span class="label">Projected Rebounds</span>
+                        <span class="value" id="res-proj">--</span>
+                    </div>
+                </div>
+
+                <div id="analysis-container" class="hidden">
+                    <div class="recommendation-banner" id="res-rec-banner">
+                        <span id="res-rec-text">RECOMMENDATION</span>
+                    </div>
+
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Over Probability</span>
+                            <span class="stat-val" id="res-over">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Under Probability</span>
+                            <span class="stat-val" id="res-under">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Edge</span>
+                            <span class="stat-val" id="res-edge">--%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="details-box">
+                    <h3>Model Insights</h3>
+                    <p id="res-summary" class="summary-text">...</p>
+                    
+                    <div class="factors-list" id="res-factors">
+                        <!-- Factors inserted via JS -->
+                    </div>
+
+                    <div class="injuries-box hidden" id="res-injuries">
+                        <p id="res-matchup-injury" class="injury-text"></p>
+                        <p id="res-team-injury" class="injury-text"></p>
+                    </div>
+                </div>
+
+            </section>
+
+             <!-- PLACEHOLDER FOR INITIAL STATE -->
+             <section class="card empty-state" id="empty-state">
+                <div class="icon">📊</div>
+                <h3>Ready to Predict</h3>
+                <p>Enter player details to run the simulation engine.</p>
+            </section>
+
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
