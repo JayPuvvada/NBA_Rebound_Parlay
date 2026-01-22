@@ -83,21 +83,33 @@ document.addEventListener('DOMContentLoaded', () => {
             const banner = document.getElementById('res-rec-banner');
             document.getElementById('res-rec-text').textContent = data.analysis.recommendation;
 
-            // Color Logic
+            // Color Logic & Tier Handling
             banner.style.color = '#fff';
+            let bg = 'rgba(239, 68, 68, 0.2)'; // Red default
+            let border = 'rgba(239, 68, 68, 0.4)';
+            let text = '#f87171';
+
             if (data.analysis.rec_color === 'green') {
-                banner.style.background = 'rgba(16, 185, 129, 0.2)';
-                banner.style.border = '1px solid rgba(16, 185, 129, 0.4)';
-                banner.style.color = '#34d399';
+                bg = 'rgba(16, 185, 129, 0.2)';
+                border = 'rgba(16, 185, 129, 0.4)';
+                text = '#34d399';
+            } else if (data.analysis.rec_color === 'blue') { // Safe Play
+                bg = 'rgba(59, 130, 246, 0.2)';
+                border = 'rgba(59, 130, 246, 0.4)';
+                text = '#60a5fa';
+            } else if (data.analysis.rec_color === 'purple') { // Trend Lean
+                bg = 'rgba(139, 92, 246, 0.2)';
+                border = 'rgba(139, 92, 246, 0.4)';
+                text = '#a78bfa';
             } else if (data.analysis.rec_color === 'yellow') {
-                banner.style.background = 'rgba(245, 158, 11, 0.2)';
-                banner.style.border = '1px solid rgba(245, 158, 11, 0.4)';
-                banner.style.color = '#fbbf24';
-            } else {
-                banner.style.background = 'rgba(239, 68, 68, 0.2)';
-                banner.style.border = '1px solid rgba(239, 68, 68, 0.4)';
-                banner.style.color = '#f87171';
+                bg = 'rgba(245, 158, 11, 0.2)';
+                border = 'rgba(245, 158, 11, 0.4)';
+                text = '#fbbf24';
             }
+
+            banner.style.background = bg;
+            banner.style.border = `1px solid ${border}`;
+            banner.style.color = text;
 
             document.getElementById('res-over').textContent = data.analysis.over_prob + '%';
             document.getElementById('res-under').textContent = data.analysis.under_prob + '%';
@@ -112,7 +124,12 @@ document.addEventListener('DOMContentLoaded', () => {
         summaryText = summaryText.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
         document.getElementById('res-summary').innerHTML = summaryText;
 
-        // Factors
+        // Render Chart
+        if (data.trend && data.trend.length > 0) {
+            renderTrendChart(data.trend, data.analysis ? data.analysis.line : null);
+        }
+
+        // Factors (Existing logic...)
         const factorsList = document.getElementById('res-factors');
         factorsList.innerHTML = '';
         if (data.components) {
@@ -216,4 +233,74 @@ document.addEventListener('DOMContentLoaded', () => {
         injBox.appendChild(injGrid);
         injBox.classList.remove('hidden');
     }
+
+    let chartInstance = null;
+
+    function renderTrendChart(trendData, line) {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+
+        if (chartInstance) {
+            chartInstance.destroy(); // Destroy previous chart to avoid overlays
+        }
+
+        // Prepare Data
+        // trendData = [{date, rebounds, opponent, minutes}, ...] (Oldest to Newest)
+        const labels = trendData.map(d => `${d.opponent}`); // X Axis: Opponent Code
+        const dataPoints = trendData.map(d => d.rebounds);
+
+        // Colors: Green if above line, Red if below (only if line exists)
+        const bgColors = dataPoints.map(val => {
+            if (line === null) return 'rgba(54, 162, 235, 0.6)'; // Blue default
+            return val > line ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)';
+        });
+
+        chartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Rebounds',
+                    data: dataPoints,
+                    backgroundColor: bgColors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => `Rebounds: ${ctx.raw} (${trendData[ctx.dataIndex].date})`
+                        }
+                    },
+                    annotation: {
+                        annotations: line ? {
+                            line1: {
+                                type: 'line',
+                                yMin: line,
+                                yMax: line,
+                                borderColor: 'rgba(255, 255, 255, 0.5)',
+                                borderWidth: 2,
+                                borderDash: [5, 5],
+                            }
+                        } : {}
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: '#ccc' }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#ccc' }
+                    }
+                }
+            }
+        });
+    }
+
 });

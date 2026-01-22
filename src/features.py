@@ -112,6 +112,27 @@ class FeatureEngineer:
                 opp_oreb_rate = opp_logs['OREB_PM'].mean()
                 opp_dreb_rate = opp_logs['DREB_PM'].mean()
 
+        # 5. Trend Data for Chart
+        last_10_trend = []
+        if not logs.empty:
+            # logs are usually sorted newest first
+            trend_slice = logs.head(10).iloc[::-1] # Reverse to get oldest -> newest
+            for _, row in trend_slice.iterrows():
+                try: 
+                    # Extract Opponent from MATCHUP
+                    # Matchup ex: "DEN vs. BOS" or "DEN @ BOS"
+                    m = row['MATCHUP']
+                    opp_code = m.split(' ')[-1] # simplistic
+                    
+                    last_10_trend.append({
+                        'date': row['GAME_DATE'],
+                        'rebounds': int(row['REB']),
+                        'opponent': opp_code,
+                        'minutes': float(row['MIN_FLOAT'])
+                    })
+                except:
+                    pass
+
         return {
             'player_name': info.iloc[0].get('DISPLAY_FIRST_LAST', 'Unknown'),
             'position': position,
@@ -125,7 +146,8 @@ class FeatureEngineer:
             'last_5_min': logs.head(5)['MIN_FLOAT'].mean(),
             'last_10_min': logs.head(10)['MIN_FLOAT'].mean(),
             'season_min_avg': logs['MIN_FLOAT'].mean(),
-            'team_id': team_id
+            'team_id': team_id,
+            'last_10_games': last_10_trend
         }
 
     def get_matchup_context(self, team_id, opponent_team_id):
@@ -332,7 +354,7 @@ class FeatureEngineer:
         # If Current Player Project > 35% of Team Avg, apply soft dampener.
         return 1.0
 
-    def compute_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, matchup_factor=1.0):
+    def compute_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, opp_days_rest=1, matchup_factor=1.0):
         """
         Refactored 2-Layer Projection Model.
         Layer 1: Base (Skill * Minutes)
@@ -437,9 +459,14 @@ class FeatureEngineer:
         raw_env_mult = pace_factor * opportunity_factor * dvp_factor * long_reb_factor * matchup_factor
         
         # Rest/Venue (Applied to Base or Env? Let's apply to Env so it gets clamped)
-        # Actually Venue/Rest is reliable, keep it separate or light.
+        # Modified Rest Logic:
+        # Player B2B (rest=0) -> -5%
+        # Opponent B2B (rest=0) -> +3%
         venue_mult = 1.03 if home_game else 0.97
-        rest_mult = 0.95 if days_rest == 0 else 1.0
+        
+        rest_mult = 1.0
+        if days_rest == 0: rest_mult *= 0.95
+        if opp_days_rest == 0: rest_mult *= 1.03
         
         raw_global_mult = raw_env_mult * venue_mult * rest_mult
         
@@ -485,7 +512,7 @@ class FeatureEngineer:
             }
         }
 
-    def compute_composite_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, matchup_player=None):
+    def compute_composite_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, opp_days_rest=1, matchup_player=None):
         """
         Higher-order method that incorporates individual matchup player scouting 
         and environment context. Calculates matchup factor acting as input to core projection.
@@ -616,6 +643,7 @@ class FeatureEngineer:
             manual_minutes, 
             home_game, 
             days_rest,
+            opp_days_rest=opp_days_rest,
             matchup_factor=final_adjustment
         )
         
@@ -629,9 +657,10 @@ class FeatureEngineer:
         proj_result['matchup_injury'] = m_note 
         proj_result['team_injury'] = proj_result['modifiers'].get('injury_note')
         
-        # Attach Full Injury Lists
+        # Attach Full Injury Lists and Trend
         proj_result['team_injury_list'] = self.get_team_injury_list(p_info['team_id'])
         proj_result['opp_injury_list'] = self.get_team_injury_list(opp_id)
+        proj_result['trend_data'] = p_info.get('last_10_games', [])
         
         proj_result['mean_projection'] = proj_result['projection'] # Backwards compat
         

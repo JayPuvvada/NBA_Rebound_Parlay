@@ -406,6 +406,46 @@ class NBADataLoader:
             'injury_note': likely_starter['injury_status']
         }
 
+    def get_days_rest(self, team_id):
+        """
+        Calculates days since the last game for a team.
+        Returns 0 if played yesterday (B2B), 1 if played 2 days ago, etc.
+        For simplicity/robustness, we check the date of the last game in the gamelog.
+        """
+        logs = self.get_team_gamelog(team_id)
+        if logs.empty:
+            return 3 # Default to rested if no logs
+
+        # Get last game date
+        last_game_date_str = logs.iloc[0]['GAME_DATE'] # Format: "JAN 20, 2026" or "2026-01-20"
+        
+        try:
+            from datetime import datetime
+            # nba_api often uses "JAN 20, 2026"
+            try:
+                last_date = datetime.strptime(last_game_date_str, "%b %d, %Y")
+            except ValueError:
+                # Try ISO format
+                last_date = datetime.strptime(last_game_date_str, "%Y-%m-%d")
+                
+            # Compare to "Today" (simulated or real)
+            # For this app, we assume "Run Time" is "Today"
+            today = datetime.now()
+            
+            delta = today - last_date
+            days_diff = delta.days
+            
+            # days_diff = 1 means they played yesterday (Today is 21st, Game was 20th) -> 0 Days Rest
+            # days_diff = 2 means they played day before yesterday -> 1 Day Rest
+            
+            rest = max(0, days_diff - 1)
+            print(f"DEBUG: Team {team_id} Last Game: {last_game_date_str} -> {days_diff} days ago -> {rest} days rest")
+            return rest
+            
+        except Exception as e:
+            print(f"Error calculating rest: {e}")
+            return 1 # Default
+
 if __name__ == "__main__":
     # Quick test
     loader = NBADataLoader(season='2025-26')

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,11 +11,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
     <!-- CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
+
 <body>
 
     <div class="container">
-        
+
         <!-- HEADER -->
         <header>
             <div class="logo">🏀 NBA Rebound AI</div>
@@ -23,21 +26,23 @@
 
         <!-- MAIN LAYOUT -->
         <div class="main-grid">
-            
+
             <!-- LEFT: INPUT FORM -->
             <section class="card input-section">
                 <h2>Game Details</h2>
                 <form id="predict-form">
-                    
+
                     <div class="form-group">
                         <label for="player">Player Name</label>
-                        <input type="text" id="player" name="player" placeholder="e.g. Nikola Jokic" required autocomplete="off">
+                        <input type="text" id="player" name="player" placeholder="e.g. Nikola Jokic" required
+                            autocomplete="off">
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
                             <label for="opponent">Opponent</label>
-                            <input type="text" id="opponent" name="opponent" placeholder="e.g. BOS" required maxlength="3" style="text-transform: uppercase;">
+                            <input type="text" id="opponent" name="opponent" placeholder="e.g. BOS" required
+                                maxlength="3" style="text-transform: uppercase;">
                         </div>
                         <div class="form-group">
                             <label for="spread">Spread</label>
@@ -61,7 +66,7 @@
                         <span class="btn-text">Run Simulation</span>
                         <div class="loader" id="loader"></div>
                     </button>
-                    
+
                     <div id="error-msg" class="error hidden"></div>
 
                 </form>
@@ -78,6 +83,13 @@
                         <span class="label">Projected Rebounds</span>
                         <span class="value" id="res-proj">--</span>
                     </div>
+
+                </div>
+
+                <!-- CHART CONTAINER -->
+                <div class="chart-container"
+                    style="margin: 30px 0 40px 0; height: 220px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 30px;">
+                    <canvas id="trendChart"></canvas>
                 </div>
 
                 <div id="analysis-container" class="hidden">
@@ -104,7 +116,7 @@
                 <div class="details-box">
                     <h3>Model Insights</h3>
                     <p id="res-summary" class="summary-text">...</p>
-                    
+
                     <div class="factors-list" id="res-factors">
                         <!-- Factors inserted via JS -->
                     </div>
@@ -117,8 +129,8 @@
 
             </section>
 
-             <!-- PLACEHOLDER FOR INITIAL STATE -->
-             <section class="card empty-state" id="empty-state">
+            <!-- PLACEHOLDER FOR INITIAL STATE -->
+            <section class="card empty-state" id="empty-state">
                 <div class="icon">📊</div>
                 <h3>Ready to Predict</h3>
                 <p>Enter player details to run the simulation engine.</p>
@@ -129,4 +141,5 @@
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
+
 </html>

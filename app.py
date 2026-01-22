@@ -38,19 +38,31 @@ def predict():
         
         matchup_val = data.get('matchup')
         matchup = matchup_val if matchup_val else None
-        
+
         # Get Player ID
         pid = loader.get_player_id(player_name)
         if not pid:
             return jsonify({'error': f"Player '{player_name}' not found."}), 404
-            
+
+        # Get Team IDs for Rest Calculation
+        p_info = loader.get_common_player_info(pid)
+        if p_info.empty:
+             return jsonify({'error': 'Player info not found'}), 404
+        team_id = p_info.iloc[0]['TEAM_ID']
+        opp_id = loader.get_team_id(opp_team)
+        
+        # Calculate Rest Days
+        team_rest = loader.get_days_rest(team_id)
+        opp_rest = loader.get_days_rest(opp_id) if opp_id else 1
+        
         # Compute Features
         proj_data = engineer.compute_composite_projection(
             pid, 
             opp_team, 
             spread=spread,
             home_game=True,    # Default to home for simplicity, or add toggle later
-            days_rest=1,      
+            days_rest=team_rest,
+            opp_days_rest=opp_rest,
             matchup_player=matchup
         )
         
@@ -74,7 +86,8 @@ def predict():
                 'team_list': proj_data.get('team_injury_list', []),
                 'opp_list': proj_data.get('opp_injury_list', [])
             },
-            'components': proj_data.get('components', {})
+            'components': proj_data.get('components', {}),
+            'trend': proj_data.get('trend_data', [])
         }
         
         # If line provided, add probability analysis
@@ -86,35 +99,66 @@ def predict():
             confidence = max(over_prob, under_prob)
             direction = "OVER" if over_prob > under_prob else "UNDER"
             
-            # Recreate the logic from main.py for recommendation text
-            break_even_prob = 0.535 
-            edge = confidence - break_even_prob
+            # Trend Analysis (Hit Rate)
+            trend_data = proj_data.get('trend_data', [])
+            hit_count = 0
+            valid_games = 0
+            for game in trend_data:
+                valid_games += 1
+                if direction == "OVER" and game['rebounds'] > line: hit_count += 1
+                elif direction == "UNDER" and game['rebounds'] < line: hit_count += 1
             
-            rec_text = "AVOID"
-            rec_color = "red"
+            hit_rate = (hit_count / valid_games) if valid_games > 0 else 0.0
             
-            if confidence > 0.64:
-                rec_text = "STRONG PLAY"
+            # Floor Check (Safe Play)
+            # 16th percentile ~ -1 STD. 
+            floor_val = probs['ci_68'][0] # Lower bound of 68% CI
+            
+            # Recommendation Logic (5-Tier)
+            tier = "AVOID"
+            rec_color = "red" # Default (Avoid/Lean)
+            
+            # 1. STRONG PLAY
+            if confidence > 0.635:
+                tier = "STRONG PLAY"
                 rec_color = "green"
+            
+            # 2. PLAY
             elif confidence > 0.585:
-                rec_text = "PLAY"
+                tier = "PLAY"
                 rec_color = "green"
+                
+            # 3. SAFE PLAY (Floor Check)
+            # If bet is OVER and Line < Floor -> Safe
+            elif direction == "OVER" and line < floor_val:
+                tier = "SAFE PLAY"
+                rec_color = "blue"
+            
+            # 4. TREND LEAN (Math Neutral, Trend Hot)
+            # If hit rate >= 70% in last 10
+            elif hit_rate >= 0.70:
+                tier = "TREND LEAN"
+                rec_color = "purple"
+                
+            # 5. LEAN (Small Edge)
             elif confidence > 0.555:
-                rec_text = "LEAN"
+                tier = "LEAN"
                 rec_color = "yellow"
             
-            if confidence < break_even_prob:
-                 rec_text = "AVOID (Negative EV)"
-                 rec_color = "red"
+            # 6. AVOID (Explicit check logic, though 'else' covers it)
+            # Default is AVOID.
+            
+            edge = confidence - 0.535 # Breakeven
             
             response['analysis'] = {
                 'line': line,
                 'over_prob': round(over_prob * 100, 1),
                 'under_prob': round(under_prob * 100, 1),
                 'confidence': round(confidence * 100, 1),
-                'recommendation': f"{rec_text} {direction} {line}",
+                'recommendation': f"{tier}",
                 'rec_color': rec_color,
-                'edge': round(edge * 100, 1)
+                'edge': round(edge * 100, 1),
+                'hit_rate': round(hit_rate * 100, 0)
             }
             
             # Generate summary
