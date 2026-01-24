@@ -284,6 +284,9 @@ def cheat_sheet():
                          if 'error' in proj or proj['projection'] < 4.0: 
                              continue 
                              
+                         # Get trend data from projection (already computed)
+                         trend_data = proj.get('trend_data', [])
+                             
                          # Check Odds
                          from unidecode import unidecode
                          norm_name = unidecode(pname).lower().replace('.', '').strip()
@@ -292,36 +295,77 @@ def cheat_sheet():
                          rec_tier = "Waiting for Line"
                          edge = 0
                          line_val = 0
+                         over_prob = 0
+                         under_prob = 0
+                         confidence = 0
+                         direction = "-"
                          
                          if line_info:
                              line_val = line_info['line']
+                             odds_price = line_info.get('odds', -110)  # American odds
+                             
                              # Run Simulation for EV
                              sim = simulator.simulate(proj, market_line=line_val)
                              probs = simulator.get_probabilities(sim, line_val)
                              
+                             over_prob = round(probs['over_probability'] * 100, 1)
+                             under_prob = round(probs['under_probability'] * 100, 1)
                              confidence = max(probs['over_probability'], probs['under_probability'])
                              direction = "OVER" if probs['over_probability'] > probs['under_probability'] else "UNDER"
                              
-                             if confidence > 0.635: rec_tier = "🔥 STRONG PLAY"
-                             elif confidence > 0.585: rec_tier = "✅ PLAY"
-                             elif direction == "OVER" and line_val < probs['ci_68'][0]: rec_tier = "🛡️ SAFE PLAY"
-                             elif confidence > 0.555: rec_tier = "👉 LEAN"
-                             else: rec_tier = "🛑 AVOID"
+                             # Calculate edge using implied probability from actual odds
+                             # Convert American odds to implied probability
+                             if odds_price < 0:
+                                 implied_prob = abs(odds_price) / (abs(odds_price) + 100)
+                             else:
+                                 implied_prob = 100 / (odds_price + 100)
                              
-                             edge = confidence - 0.50
+                             edge = confidence - implied_prob
+                             
+                             # Tier logic - require positive edge for any play recommendation
+                             if edge <= 0:
+                                 rec_tier = "🛑 AVOID"  # No edge = no play
+                             elif confidence > 0.635 and edge > 0.10: 
+                                 rec_tier = "🔥 STRONG PLAY"
+                             elif confidence > 0.585 and edge > 0.05: 
+                                 rec_tier = "✅ PLAY"
+                             elif direction == "OVER" and line_val < probs['ci_68'][0] and edge > 0: 
+                                 rec_tier = "🛡️ SAFE PLAY"
+                             elif confidence > 0.555 and edge > 0: 
+                                 rec_tier = "👉 LEAN"
+                             else: 
+                                 rec_tier = "🛑 AVOID"
                          else:
                              rec_tier = "-"
+                         
+                         # Build components for detail view
+                         components = {
+                             'Base Rebs': round(proj.get('base_rebounds', 0), 1),
+                             'Pace Factor': round(proj.get('pace_factor', 1.0), 2),
+                             'Opp Defense': round(proj.get('opp_factor', 1.0), 2),
+                             'DvP Mult': round(proj.get('dvp_mult', 1.0), 2),
+                             'Matchup Adj': round(proj.get('matchup_mult', 1.0), 2),
+                             'Home/Away': round(proj.get('home_away_mult', 1.0), 2),
+                             'Rest Factor': round(proj.get('rest_mult', 1.0), 2)
+                         }
                              
                          results.append({
                              'player': pname,
+                             'player_id': pid,
                              'team': t_code,
                              'opponent': opp_code,
                              'projection': round(proj['projection'], 1),
                              'line': line_val if line_info else '-',
-                             'direction': direction if line_info else '-',
+                             'direction': direction,
                              'tier': rec_tier,
                              'edge_raw': edge,
-                             'rest_note': f"{rest}d vs {opp_rest_val}d"
+                             'rest_note': f"{rest}d vs {opp_rest_val}d",
+                             # Detail data
+                             'components': components,
+                             'trend': trend_data,
+                             'over_prob': over_prob,
+                             'under_prob': under_prob,
+                             'confidence': round(confidence * 100, 1) if line_info else 0
                          })
                          
                      except Exception as e:

@@ -369,7 +369,7 @@ document.addEventListener('DOMContentLoaded', () => {
             csLoading.classList.add('hidden');
 
             if (data.error) {
-                csBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:red;">${data.error}</td></tr>`;
+                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:red;">${data.error}</td></tr>`;
                 return;
             }
 
@@ -378,8 +378,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            data.forEach(row => {
+            data.forEach((row, idx) => {
                 const tr = document.createElement('tr');
+                tr.className = 'player-row';
+                tr.dataset.idx = idx;
 
                 // Tier Color Class
                 let tierClass = "";
@@ -394,7 +396,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 tr.innerHTML = `
                     <td>
-                        <div style="font-weight:bold;">${row.player}</div>
+                        <div style="font-weight:bold;">${row.player} <span style="font-size:0.7rem; color:#6b7280;">▼</span></div>
                         <div style="font-size:0.8rem; color:#9ca3af;">${row.team}</div>
                     </td>
                     <td>vs ${row.opponent} <span style="font-size:0.7rem;">(${row.rest_note})</span></td>
@@ -403,6 +405,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="${dirClass}" style="font-weight:bold;">${row.direction}</td>
                     <td class="${tierClass}">${row.tier}</td>
                 `;
+
+                // Click handler for detail expansion
+                tr.addEventListener('click', () => {
+                    togglePlayerDetail(row, tr, idx);
+                });
+
                 csBody.appendChild(tr);
             });
 
@@ -411,6 +419,161 @@ document.addEventListener('DOMContentLoaded', () => {
             csLoading.classList.add('hidden');
             csBody.innerHTML = `<tr><td colspan="6">Error loading data. Check console.</td></tr>`;
         }
+    }
+
+    // Track currently open detail row
+    let openDetailIdx = null;
+
+    function togglePlayerDetail(row, tr, idx) {
+        // If clicking same row, close it
+        const existingDetail = document.querySelector('.player-detail-row');
+        if (existingDetail) {
+            existingDetail.remove();
+            if (openDetailIdx === idx) {
+                openDetailIdx = null;
+                return;
+            }
+        }
+
+        openDetailIdx = idx;
+
+        // Create detail row
+        const detailTr = document.createElement('tr');
+        detailTr.className = 'player-detail-row';
+
+        const detailTd = document.createElement('td');
+        detailTd.colSpan = 6;
+        detailTd.innerHTML = renderDetailPanel(row);
+
+        detailTr.appendChild(detailTd);
+        tr.insertAdjacentElement('afterend', detailTr);
+
+        // Render mini trend chart if trend data exists
+        if (row.trend && row.trend.length > 0) {
+            setTimeout(() => {
+                renderMiniTrendChart(row.trend, row.line, row.player_id);
+            }, 100);
+        }
+    }
+
+    function renderDetailPanel(row) {
+        // Probabilities section
+        let probsHtml = '';
+        if (row.line !== '-') {
+            const edge = row.edge_raw ? (row.edge_raw * 100).toFixed(1) : '0';
+            probsHtml = `
+                <div class="detail-probs">
+                    <div class="prob-item">
+                        <span class="prob-label">Over Prob</span>
+                        <span class="prob-val dir-over">${row.over_prob}%</span>
+                    </div>
+                    <div class="prob-item">
+                        <span class="prob-label">Under Prob</span>
+                        <span class="prob-val dir-under">${row.under_prob}%</span>
+                    </div>
+                    <div class="prob-item">
+                        <span class="prob-label">Edge</span>
+                        <span class="prob-val" style="color:#fbbf24;">${edge}%</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Trend chart placeholder
+        let trendHtml = '';
+        if (row.trend && row.trend.length > 0) {
+            trendHtml = `
+                <div class="detail-trend">
+                    <div class="trend-title">Last ${row.trend.length} Games</div>
+                    <div style="height: 120px;">
+                        <canvas id="mini-chart-${row.player_id}"></canvas>
+                    </div>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="detail-panel">
+                <div class="detail-header">
+                    <span class="detail-player">${row.player}</span>
+                    <span class="detail-matchup">${row.team} vs ${row.opponent} • Proj: ${row.projection} | Line: ${row.line}</span>
+                </div>
+                <div class="detail-body-simple">
+                    ${probsHtml}
+                    ${trendHtml}
+                </div>
+            </div>
+        `;
+    }
+
+    // Store mini chart instances
+    const miniCharts = {};
+
+    function renderMiniTrendChart(trendData, line, playerId) {
+        const canvasId = `mini-chart-${playerId}`;
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) {
+            console.log('Canvas not found:', canvasId);
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+
+        // Destroy existing chart if present
+        if (miniCharts[canvasId]) {
+            miniCharts[canvasId].destroy();
+        }
+
+        const labels = trendData.map(d => d.opponent);
+        const dataPoints = trendData.map(d => d.rebounds);
+        const lineVal = typeof line === 'number' ? line : null;
+
+        const bgColors = dataPoints.map(val => {
+            if (lineVal === null) return 'rgba(165, 180, 252, 0.7)';
+            return val > lineVal ? 'rgba(34, 197, 94, 0.7)' : 'rgba(248, 113, 113, 0.7)';
+        });
+
+        miniCharts[canvasId] = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: dataPoints,
+                    backgroundColor: bgColors,
+                    borderRadius: 3,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    annotation: {
+                        annotations: lineVal ? {
+                            line1: {
+                                type: 'line',
+                                yMin: lineVal,
+                                yMax: lineVal,
+                                borderColor: 'rgba(255, 255, 255, 0.5)',
+                                borderWidth: 1,
+                                borderDash: [3, 3],
+                            }
+                        } : {}
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: { color: '#888', font: { size: 10 } }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#888', font: { size: 9 } }
+                    }
+                }
+            }
+        });
     }
 
 });
