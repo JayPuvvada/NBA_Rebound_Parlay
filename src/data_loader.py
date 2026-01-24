@@ -134,6 +134,7 @@ class NBADataLoader:
         return df
 
     def get_common_player_info(self, player_id):
+        print(f"DEBUG: Getting info for player {player_id}", flush=True)
         key = f"common_info_{player_id}"
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
@@ -445,13 +446,155 @@ class NBADataLoader:
         except Exception as e:
             print(f"Error calculating rest: {e}")
             return 1 # Default
+        except Exception as e:
+            print(f"Error calculating rest: {e}")
+            return 1 # Default
 
-if __name__ == "__main__":
-    # Quick test
-    loader = NBADataLoader(season='2025-26')
-    jokic_id = loader.get_player_id("Nikola Jokic")
-    print(f"Jokic ID: {jokic_id}")
-    if jokic_id:
-        log = loader.get_player_gamelog(jokic_id)
-        print(f"Games found: {len(log)}")
-        print(log.head())
+    def get_games_for_date(self, date_str):
+        """
+        Get games for a specific date (YYYY-MM-DD).
+        """
+        key = f"games_{date_str}"
+        cached = self._get_from_cache(key)
+        if cached: return cached
+        
+        try:
+            # Using ScoreboardV2 for specific dates
+            from nba_api.stats.endpoints import scoreboardv2
+            
+            print(f"DEBUG: Fetching games for {date_str}...", flush=True)
+            board = scoreboardv2.ScoreboardV2(game_date=date_str)
+            
+            # The structure of ScoreboardV2 is a bit different from live endpoint
+            # We get headers and row sets
+            games_dict = board.game_header.get_dict()
+            headers = games_dict['headers']
+            rows = games_dict['data']
+            
+            games = []
+            
+            # Helper to access by column name
+            def get_col(row, col_name):
+                try:
+                    idx = headers.index(col_name)
+                    return row[idx]
+                except ValueError:
+                    return None
+            
+            for row in rows:
+                gid = get_col(row, 'GAME_ID')
+                hid = get_col(row, 'HOME_TEAM_ID')
+                vid = get_col(row, 'VISITOR_TEAM_ID')
+                
+                # We need simple dicts
+                games.append({
+                    'game_id': gid,
+                    'home_id': hid,
+                    'away_id': vid
+                    # We will resolve codes later or need another lookup
+                })
+                
+            self._set_cache(key, games)
+            return games
+
+        except Exception as e:
+            print(f"Error fetching games for {date_str}: {e}")
+            return []
+
+    def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel'):
+        """
+        Targeted Odds Fetch:
+        1. Get ALL events for the date (cheap/free-ish).
+        2. Find the event matching the teams.
+        3. Get odds ONLY for that event ID (costs quota).
+        """
+        key = f"odds_{home_team_code}_{away_team_code}_{date_str}_{bookmaker}"
+        cached = self._get_from_cache(key)
+        if cached: return cached
+
+        import requests
+        
+        try:
+            print(f"DEBUG: Deep-searching odds for {home_team_code} vs {away_team_code} on {bookmaker}...", flush=True)
+            
+            # 1. Get Events
+            # We filter by likely active events.
+            events_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events?apiKey={api_key}&regions=us"
+            resp = requests.get(events_url)
+            if resp.status_code != 200:
+                print(f"Odds API Error (Events): {resp.text}")
+                return {}
+            
+            events = resp.json()
+            target_event_id = None
+            
+            # Helper for loose matching
+            # API names: "Boston Celtics", "Los Angeles Lakers"
+            # Our codes: "BOS", "LAL"
+            
+            team_map = {
+                'ATL': 'Hawks', 'BOS': 'Celtics', 'BKN': 'Nets', 'CHA': 'Hornets', 'CHI': 'Bulls',
+                'CLE': 'Cavaliers', 'DAL': 'Mavericks', 'DEN': 'Nuggets', 'DET': 'Pistons', 'GSW': 'Warriors',
+                'HOU': 'Rockets', 'IND': 'Pacers', 'LAC': 'Clippers', 'LAL': 'Lakers', 'MEM': 'Grizzlies',
+                'MIA': 'Heat', 'MIL': 'Bucks', 'MIN': 'Timberwolves', 'NOP': 'Pelicans', 'NYK': 'Knicks',
+                'OKC': 'Thunder', 'ORL': 'Magic', 'PHI': '76ers', 'PHX': 'Suns', 'POR': 'Trail Blazers',
+                'SAC': 'Kings', 'SAS': 'Spurs', 'TOR': 'Raptors', 'UTA': 'Jazz', 'WAS': 'Wizards'
+            }
+            
+            h_name_part = team_map.get(home_team_code, home_team_code)
+            a_name_part = team_map.get(away_team_code, away_team_code)
+
+            for event in events:
+                e_home = event['home_team']
+                e_away = event['away_team']
+                
+                # Check for match (either side)
+                # If "Celtics" in "Boston Celtics"
+                if (h_name_part in e_home and a_name_part in e_away) or \
+                   (h_name_part in e_away and a_name_part in e_home):
+                    target_event_id = event['id']
+                    break
+            
+            if not target_event_id:
+                print("DEBUG: No matching Odds Event found.")
+                return {}
+                
+            # 2. Get Props for ID - filtered by selected bookmaker
+            print(f"DEBUG: Found Event ID {target_event_id}. Fetching Props from {bookmaker}...", flush=True)
+            props_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{target_event_id}/odds?apiKey={api_key}&regions=us&bookmakers={bookmaker}&markets=player_rebounds&oddsFormat=american"
+            
+            p_resp = requests.get(props_url)
+            if p_resp.status_code != 200:
+                return {}
+            
+            props_data = p_resp.json()
+            player_props = {}
+            bookmakers = props_data.get('bookmakers', [])
+            
+            # DEBUG: Log available bookmakers
+            book_keys = [b.get('key', 'unknown') for b in bookmakers]
+            print(f"DEBUG: Available bookmakers: {book_keys}", flush=True)
+            
+            for book in bookmakers:
+                for market in book.get('markets', []):
+                    if market['key'] == 'player_rebounds':
+                         for outcome in market['outcomes']:
+                            if outcome['name'] == 'Over':
+                                p_name = outcome['description']
+                                line = outcome['point']
+                                
+                                from unidecode import unidecode
+                                norm_p = unidecode(p_name).lower().replace('.', '').strip()
+                                
+                                player_props[norm_p] = {
+                                    'line': line,
+                                    'odds': outcome['price'],
+                                    'book': book['title']
+                                }
+            
+            self._set_cache(key, player_props)
+            return player_props
+
+        except Exception as e:
+            print(f"Error fetching odds: {e}")
+            return {}

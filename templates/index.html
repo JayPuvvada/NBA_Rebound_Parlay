@@ -22,6 +22,10 @@
         <header>
             <div class="logo">🏀 NBA Rebound AI</div>
             <p class="subtitle">Advanced Projection Model & Edge Finder</p>
+            <button id="cheat-sheet-btn"
+                style="margin-top: 15px; background: #8b5cf6; width: auto; display: inline-flex; padding: 0.8rem 2rem;">
+                🔥 Daily Cheat Sheet
+            </button>
         </header>
 
         <!-- MAIN LAYOUT -->
@@ -136,6 +140,91 @@
                 <p>Enter player details to run the simulation engine.</p>
             </section>
 
+        </div>
+    </div>
+
+    <!-- CHEAT SHEET MODAL -->
+    <div id="cs-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🔥 Daily Cheat Sheet</h2>
+                <span class="close" id="close-modal">&times;</span>
+            </div>
+
+            <div class="cs-controls">
+                <div class="input-group">
+                    <label>Date:</label>
+                    <input type="date" id="cs-date" class="cs-input">
+                </div>
+                <div class="input-group">
+                    <label>Team:</label>
+                    <select id="cs-team" class="cs-input">
+                        <option value="" disabled selected>Select Team</option>
+                        <option value="ATL">Atlanta Hawks</option>
+                        <option value="BOS">Boston Celtics</option>
+                        <option value="BKN">Brooklyn Nets</option>
+                        <option value="CHA">Charlotte Hornets</option>
+                        <option value="CHI">Chicago Bulls</option>
+                        <option value="CLE">Cleveland Cavaliers</option>
+                        <option value="DAL">Dallas Mavericks</option>
+                        <option value="DEN">Denver Nuggets</option>
+                        <option value="DET">Detroit Pistons</option>
+                        <option value="GSW">Golden State Warriors</option>
+                        <option value="HOU">Houston Rockets</option>
+                        <option value="IND">Indiana Pacers</option>
+                        <option value="LAC">LA Clippers</option>
+                        <option value="LAL">Los Angeles Lakers</option>
+                        <option value="MEM">Memphis Grizzlies</option>
+                        <option value="MIA">Miami Heat</option>
+                        <option value="MIL">Milwaukee Bucks</option>
+                        <option value="MIN">Minnesota Timberwolves</option>
+                        <option value="NOP">New Orleans Pelicans</option>
+                        <option value="NYK">New York Knicks</option>
+                        <option value="OKC">Oklahoma City Thunder</option>
+                        <option value="ORL">Orlando Magic</option>
+                        <option value="PHI">Philadelphia 76ers</option>
+                        <option value="PHX">Phoenix Suns</option>
+                        <option value="POR">Portland Trail Blazers</option>
+                        <option value="SAC">Sacramento Kings</option>
+                        <option value="SAS">San Antonio Spurs</option>
+                        <option value="TOR">Toronto Raptors</option>
+                        <option value="UTA">Utah Jazz</option>
+                        <option value="WAS">Washington Wizards</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Sportsbook:</label>
+                    <select id="cs-book" class="cs-input">
+                        <option value="fanduel" selected>FanDuel</option>
+                        <option value="draftkings">DraftKings</option>
+                        <option value="bovada">Bovada</option>
+                        <option value="betonlineag">BetOnlineAG</option>
+                    </select>
+                </div>
+                <button id="cs-run-btn" class="action-btn">Find Best Bets</button>
+            </div>
+
+            <div id="cs-loading" class="hidden">
+                <div class="spinner"></div>
+                <p>Analyzing Matchups & Live Odds...</p>
+            </div>
+            <div class="table-container">
+                <table id="cs-table">
+                    <thead>
+                        <tr>
+                            <th>Player</th>
+                            <th>Matchup</th>
+                            <th>Proj Rebs</th>
+                            <th>Line</th>
+                            <th>Direction</th>
+                            <th>Rec Tier</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cs-body">
+                        <!-- Rows injected here -->
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 

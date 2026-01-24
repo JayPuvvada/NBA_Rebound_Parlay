@@ -303,4 +303,114 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- CHEAT SHEET LOGIC ---
+    const csBtn = document.getElementById('cheat-sheet-btn');
+    const csModal = document.getElementById('cs-modal');
+    const closeModal = document.getElementById('close-modal');
+    const csBody = document.getElementById('cs-body');
+    const csLoading = document.getElementById('cs-loading');
+
+    // New Inputs
+    const csRunBtn = document.getElementById('cs-run-btn');
+    const csDateInput = document.getElementById('cs-date');
+    const csTeamInput = document.getElementById('cs-team');
+    const csBookInput = document.getElementById('cs-book');
+
+    if (csBtn) {
+        csBtn.addEventListener('click', () => {
+            csModal.classList.remove('hidden');
+            // Set default date to today if empty
+            if (csDateInput && !csDateInput.value) {
+                const today = new Date().toISOString().split('T')[0];
+                csDateInput.value = today;
+            }
+        });
+
+        if (closeModal) {
+            closeModal.addEventListener('click', () => {
+                csModal.classList.add('hidden');
+            });
+        }
+
+        // Window click to close
+        window.addEventListener('click', (e) => {
+            if (e.target === csModal) {
+                csModal.classList.add('hidden');
+            }
+        });
+
+        // Run Button Listener
+        if (csRunBtn) {
+            csRunBtn.addEventListener('click', async () => {
+                const date = csDateInput.value;
+                const team = csTeamInput.value;
+                const book = csBookInput.value;
+
+                if (!date || !team) {
+                    alert("Please select a Date and a Team.");
+                    return;
+                }
+
+                await loadCheatSheet(date, team, book);
+            });
+        }
+    }
+
+    async function loadCheatSheet(date, team, book) {
+        if (!csLoading) return;
+
+        csLoading.classList.remove('hidden');
+        if (csBody) csBody.innerHTML = '';
+
+        try {
+            const res = await fetch(`/cheat-sheet?date=${date}&team=${team}&book=${book}`);
+            const data = await res.json();
+
+            csLoading.classList.add('hidden');
+
+            if (data.error) {
+                csBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:red;">${data.error}</td></tr>`;
+                return;
+            }
+
+            if (data.length === 0) {
+                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No players found.</td></tr>`;
+                return;
+            }
+
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+
+                // Tier Color Class
+                let tierClass = "";
+                if (row.tier.includes("STRONG")) tierClass = "tier-strong";
+                else if (row.tier.includes("PLAY")) tierClass = "tier-play";
+                else if (row.tier.includes("SAFE")) tierClass = "tier-safe";
+                else if (row.tier.includes("LEAN")) tierClass = "tier-lean";
+                else tierClass = "tier-avoid";
+
+                // Direction styling
+                let dirClass = row.direction === "OVER" ? "dir-over" : "dir-under";
+
+                tr.innerHTML = `
+                    <td>
+                        <div style="font-weight:bold;">${row.player}</div>
+                        <div style="font-size:0.8rem; color:#9ca3af;">${row.team}</div>
+                    </td>
+                    <td>vs ${row.opponent} <span style="font-size:0.7rem;">(${row.rest_note})</span></td>
+                    <td style="font-size:1.1rem; font-weight:bold; color:#a5b4fc;">${row.projection}</td>
+                    <td>${row.line}</td>
+                    <td class="${dirClass}" style="font-weight:bold;">${row.direction}</td>
+                    <td class="${tierClass}">${row.tier}</td>
+                `;
+                csBody.appendChild(tr);
+            });
+
+        } catch (err) {
+            console.error(err);
+            csLoading.classList.add('hidden');
+            csBody.innerHTML = `<tr><td colspan="6">Error loading data. Check console.</td></tr>`;
+        }
+    }
+
 });
