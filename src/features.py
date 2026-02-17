@@ -133,6 +133,22 @@ class FeatureEngineer:
                 except:
                     pass
 
+        # 6. Variance-Aware Stats (actual game-to-game variance)
+        reb_per_game = logs['REB'].astype(float)
+        reb_variance = float(reb_per_game.var()) if len(reb_per_game) > 2 else None
+        reb_std = float(reb_per_game.std()) if len(reb_per_game) > 2 else None
+        reb_mean = float(reb_per_game.mean()) if len(reb_per_game) > 0 else None
+
+        # 7. Minutes Trend Detection (linear regression on last 5 games)
+        minutes_trend_slope = 0.0
+        recent_mins = logs.head(5)['MIN_FLOAT'].values
+        if len(recent_mins) >= 3:
+            # logs are newest-first, so reverse for proper time order
+            ordered_mins = recent_mins[::-1]
+            x = np.arange(len(ordered_mins))
+            coeffs = np.polyfit(x, ordered_mins, 1)
+            minutes_trend_slope = float(coeffs[0])  # min/game slope
+
         return {
             'player_name': info.iloc[0].get('DISPLAY_FIRST_LAST', 'Unknown'),
             'position': position,
@@ -147,7 +163,14 @@ class FeatureEngineer:
             'last_10_min': logs.head(10)['MIN_FLOAT'].mean(),
             'season_min_avg': logs['MIN_FLOAT'].mean(),
             'team_id': team_id,
-            'last_10_games': last_10_trend
+            'last_10_games': last_10_trend,
+            # New: Variance-Aware Simulation data
+            'reb_variance': reb_variance,
+            'reb_std': reb_std,
+            'reb_mean': reb_mean,
+            'games_played': len(logs),
+            # New: Minutes Trend
+            'minutes_trend_slope': minutes_trend_slope
         }
 
     def get_matchup_context(self, team_id, opponent_team_id):
@@ -376,6 +399,15 @@ class FeatureEngineer:
         season_min = p_stats.get('season_min_avg', p_stats['last_10_min'])
         base_minutes = manual_minutes if manual_minutes else (season_min * 0.7 + p_stats['last_10_min'] * 0.3)
         
+        # Minutes Trend Adjustment (NEW)
+        # If minutes are trending significantly up/down, project forward
+        min_trend_slope = p_stats.get('minutes_trend_slope', 0.0)
+        trend_adjustment = 0.0
+        if not manual_minutes and abs(min_trend_slope) > 0.5:
+            # Project 2 games forward, capped at ±3 minutes
+            trend_adjustment = max(-3.0, min(3.0, min_trend_slope * 2))
+            base_minutes += trend_adjustment
+        
         # Injury Adjustment for Minutes
         injury_note = None
         if not manual_minutes:
@@ -401,20 +433,31 @@ class FeatureEngineer:
 
         proj_minutes = base_minutes * blowout_modifier
         
-        # Skill (Rebounds Per Minute) - Weighted Blend
-        # 50% Season, 30% Recent, 20% Opponent (if exists)
-        if p_stats.get('opp_oreb_rate') is not None:
-            skill_oreb = (p_stats['season_oreb_rate'] * 0.50 + 
-                          p_stats['recent_oreb_rate'] * 0.30 + 
-                          p_stats['opp_oreb_rate'] * 0.20)
-            skill_dreb = (p_stats['season_dreb_rate'] * 0.50 + 
-                          p_stats['recent_dreb_rate'] * 0.30 + 
-                          p_stats['opp_dreb_rate'] * 0.20)
+        # Dynamic Recency Weights (NEW)
+        # Adjust season/recent/opponent blend based on games played
+        games_played = p_stats.get('games_played', 30)
+        if games_played < 15:
+            w_season, w_recent, w_opp = 0.65, 0.20, 0.15
+        elif games_played <= 40:
+            w_season, w_recent, w_opp = 0.50, 0.30, 0.20
         else:
-            skill_oreb = (p_stats['season_oreb_rate'] * 0.60 + 
-                          p_stats['recent_oreb_rate'] * 0.40)
-            skill_dreb = (p_stats['season_dreb_rate'] * 0.60 + 
-                          p_stats['recent_dreb_rate'] * 0.40)
+            w_season, w_recent, w_opp = 0.35, 0.45, 0.20
+        
+        # Skill (Rebounds Per Minute) - Dynamic Weighted Blend
+        if p_stats.get('opp_oreb_rate') is not None:
+            skill_oreb = (p_stats['season_oreb_rate'] * w_season + 
+                          p_stats['recent_oreb_rate'] * w_recent + 
+                          p_stats['opp_oreb_rate'] * w_opp)
+            skill_dreb = (p_stats['season_dreb_rate'] * w_season + 
+                          p_stats['recent_dreb_rate'] * w_recent + 
+                          p_stats['opp_dreb_rate'] * w_opp)
+        else:
+            # No opponent data: redistribute opp weight to season
+            w_s_no_opp = w_season + w_opp
+            skill_oreb = (p_stats['season_oreb_rate'] * w_s_no_opp + 
+                          p_stats['recent_oreb_rate'] * w_recent)
+            skill_dreb = (p_stats['season_dreb_rate'] * w_s_no_opp + 
+                          p_stats['recent_dreb_rate'] * w_recent)
 
         # Base Calc
         base_rebs = proj_minutes * (skill_oreb + skill_dreb)
@@ -663,6 +706,13 @@ class FeatureEngineer:
         proj_result['trend_data'] = p_info.get('last_10_games', [])
         
         proj_result['mean_projection'] = proj_result['projection'] # Backwards compat
+        
+        # Attach variance data for simulation
+        proj_result['player_variance'] = {
+            'reb_variance': p_info.get('reb_variance'),
+            'reb_std': p_info.get('reb_std'),
+            'reb_mean': p_info.get('reb_mean')
+        }
         
         return proj_result
 

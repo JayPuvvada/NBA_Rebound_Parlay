@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
             opponent: formData.get('opponent'),
             spread: formData.get('spread'),
             line: formData.get('line'),
+            odds: formData.get('odds'),
             matchup: formData.get('matchup')
         };
 
@@ -113,7 +114,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             document.getElementById('res-over').textContent = data.analysis.over_prob + '%';
             document.getElementById('res-under').textContent = data.analysis.under_prob + '%';
-            document.getElementById('res-edge').textContent = data.analysis.edge + '%';
+
+            // Edge display: show true edge if available, else raw edge
+            if (data.analysis.true_edge !== undefined) {
+                document.getElementById('res-edge').textContent = data.analysis.true_edge + '% (vs odds)';
+            } else {
+                document.getElementById('res-edge').textContent = data.analysis.edge + '%';
+            }
         } else {
             analysisDiv.classList.add('hidden');
         }
@@ -572,6 +579,183 @@ document.addEventListener('DOMContentLoaded', () => {
                         ticks: { color: '#888', font: { size: 9 } }
                     }
                 }
+            }
+        });
+    }
+
+    // --- PARLAY BUILDER LOGIC ---
+    const parlayBtn = document.getElementById('parlay-builder-btn');
+    const parlayModal = document.getElementById('parlay-modal');
+    const closeParlayModal = document.getElementById('close-parlay-modal');
+    const addLegBtn = document.getElementById('add-leg-btn');
+    const calcParlayBtn = document.getElementById('calc-parlay-btn');
+    const parlayLegsContainer = document.getElementById('parlay-legs-container');
+    const parlayLoading = document.getElementById('parlay-loading');
+    const parlayResults = document.getElementById('parlay-results');
+    const parlayBody = document.getElementById('parlay-body');
+    const parlayCombined = document.getElementById('parlay-combined');
+
+    let parlayLegCount = 0;
+
+    function createLegRow() {
+        parlayLegCount++;
+        const legDiv = document.createElement('div');
+        legDiv.className = 'parlay-leg';
+        legDiv.dataset.legNum = parlayLegCount;
+        legDiv.innerHTML = `
+            <div class="parlay-leg-header">
+                <span class="leg-number">Leg ${parlayLegCount}</span>
+                <button class="remove-leg-btn" title="Remove">&times;</button>
+            </div>
+            <div class="parlay-leg-fields">
+                <input type="text" class="parlay-input" placeholder="Player Name" data-field="player" required>
+                <input type="text" class="parlay-input" placeholder="OPP" data-field="opponent" maxlength="3" style="text-transform:uppercase; width:60px;">
+                <input type="number" class="parlay-input" placeholder="Line" data-field="line" step="0.5" style="width:70px;">
+                <select class="parlay-input" data-field="direction" style="width:80px;">
+                    <option value="OVER">OVER</option>
+                    <option value="UNDER">UNDER</option>
+                </select>
+                <input type="number" class="parlay-input" placeholder="Spread" data-field="spread" step="0.5" style="width:70px;" value="0">
+            </div>
+        `;
+
+        // Remove button
+        legDiv.querySelector('.remove-leg-btn').addEventListener('click', () => {
+            legDiv.remove();
+            renumberLegs();
+        });
+
+        return legDiv;
+    }
+
+    function renumberLegs() {
+        const legs = parlayLegsContainer.querySelectorAll('.parlay-leg');
+        parlayLegCount = legs.length;
+        legs.forEach((leg, idx) => {
+            leg.dataset.legNum = idx + 1;
+            leg.querySelector('.leg-number').textContent = `Leg ${idx + 1}`;
+        });
+    }
+
+    if (parlayBtn) {
+        parlayBtn.addEventListener('click', () => {
+            parlayModal.classList.remove('hidden');
+            // Start with 2 legs if empty
+            if (parlayLegsContainer.children.length === 0) {
+                parlayLegsContainer.appendChild(createLegRow());
+                parlayLegsContainer.appendChild(createLegRow());
+            }
+        });
+    }
+
+    if (closeParlayModal) {
+        closeParlayModal.addEventListener('click', () => {
+            parlayModal.classList.add('hidden');
+        });
+    }
+
+    if (addLegBtn) {
+        addLegBtn.addEventListener('click', () => {
+            if (parlayLegCount >= 8) {
+                alert('Maximum 8 legs allowed');
+                return;
+            }
+            parlayLegsContainer.appendChild(createLegRow());
+        });
+    }
+
+    if (calcParlayBtn) {
+        calcParlayBtn.addEventListener('click', async () => {
+            const legElements = parlayLegsContainer.querySelectorAll('.parlay-leg');
+            if (legElements.length < 2) {
+                alert('Add at least 2 legs');
+                return;
+            }
+
+            const legs = [];
+            let valid = true;
+            legElements.forEach(legEl => {
+                const player = legEl.querySelector('[data-field="player"]').value.trim();
+                const opponent = legEl.querySelector('[data-field="opponent"]').value.trim();
+                const line = legEl.querySelector('[data-field="line"]').value;
+                const direction = legEl.querySelector('[data-field="direction"]').value;
+                const spread = legEl.querySelector('[data-field="spread"]').value || '0';
+
+                if (!player || !opponent || !line) {
+                    valid = false;
+                    return;
+                }
+                legs.push({ player, opponent, line: parseFloat(line), direction, spread: parseFloat(spread) });
+            });
+
+            if (!valid) {
+                alert('Fill in all fields for each leg');
+                return;
+            }
+
+            // Show loading
+            parlayLoading.classList.remove('hidden');
+            parlayResults.classList.add('hidden');
+            calcParlayBtn.disabled = true;
+
+            try {
+                const response = await fetch('/parlay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ legs })
+                });
+
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Parlay failed');
+
+                // Render results
+                parlayBody.innerHTML = '';
+                data.legs.forEach(leg => {
+                    const tr = document.createElement('tr');
+                    if (leg.error) {
+                        tr.innerHTML = `<td>${leg.leg}</td><td colspan="5" style="color:#f87171;">${leg.player || '?'}: ${leg.error}</td>`;
+                    } else {
+                        const probColor = leg.probability >= 55 ? '#22c55e' : (leg.probability >= 50 ? '#fbbf24' : '#f87171');
+                        const dirColor = leg.direction === 'OVER' ? '#22c55e' : '#f87171';
+                        tr.innerHTML = `
+                            <td>${leg.leg}</td>
+                            <td>${leg.player}</td>
+                            <td>${leg.line}</td>
+                            <td style="color:${dirColor}; font-weight:600;">${leg.direction}</td>
+                            <td>${leg.projection}</td>
+                            <td style="color:${probColor}; font-weight:700;">${leg.probability}%</td>
+                        `;
+                    }
+                    parlayBody.appendChild(tr);
+                });
+
+                // Combined box
+                const cp = data.combined_probability;
+                const ao = data.parlay_american_odds;
+                const dec = data.parlay_decimal_odds;
+                const aoStr = ao >= 0 ? `+${ao}` : `${ao}`;
+                parlayCombined.innerHTML = `
+                    <div class="parlay-combined-row">
+                        <span class="parlay-stat-label">Combined Probability</span>
+                        <span class="parlay-stat-value" style="color: ${cp > 30 ? '#22c55e' : '#f87171'}">${cp.toFixed(1)}%</span>
+                    </div>
+                    <div class="parlay-combined-row">
+                        <span class="parlay-stat-label">Fair Odds</span>
+                        <span class="parlay-stat-value">${aoStr} (${dec}x)</span>
+                    </div>
+                    <div class="parlay-combined-row">
+                        <span class="parlay-stat-label">Legs</span>
+                        <span class="parlay-stat-value">${data.num_legs}</span>
+                    </div>
+                `;
+
+                parlayResults.classList.remove('hidden');
+
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                parlayLoading.classList.add('hidden');
+                calcParlayBtn.disabled = false;
             }
         });
     }

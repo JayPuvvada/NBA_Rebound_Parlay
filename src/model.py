@@ -31,10 +31,11 @@ class ReboundSimulator:
         n = mean * p / (1 - p)
         return n, p
 
-    def simulate(self, projection_data, market_line=None):
+    def simulate(self, projection_data, market_line=None, player_variance=None):
         """
         Simulates outcomes using Negative Binomial distribution.
         If market_line is provided, blends Model Projection with Market Line (Bayesian Update).
+        Now supports empirical player variance for more accurate distributions.
         """
         # Support both new 'projection' key and old 'mean_projection' key for backward compatibility
         model_mean = projection_data.get('projection', projection_data.get('mean_projection'))
@@ -42,38 +43,42 @@ class ReboundSimulator:
             raise ValueError("Projection data missing 'projection' or 'mean_projection' key")
 
         # --- A. Market Anchoring (Posterior Mean) ---
-        # If we have a market line, we treat it as a high-confidence prior.
-        # This prevents the model from being "stubbornly wrong" if the market knows something (e.g. injury)
-        
         if market_line:
-            # Weighting: How much do we trust our model vs the market?
-            # Start with 60% Model, 40% Market. 
             w_model = 0.60
             final_mean = (model_mean * w_model) + (market_line * (1 - w_model))
         else:
             final_mean = model_mean
 
-        # --- B. Variance Calculation (Fano Factor) ---
-        # Variance = Mean * FanoFactor
-        # User request: "Expected minutes-based Fano factor"
+        # --- B. Variance Calculation (Empirical + Heuristic Blend) ---
         
-        # Get Minutes
-        minutes = 30.0 # Default
+        # Heuristic Fano Factor (minutes-based, original logic)
+        minutes = 30.0
         if 'components' in projection_data:
             minutes = projection_data['components'].get('Proj Minutes', 30.0)
         elif 'modifiers' in projection_data:
             minutes = projection_data['modifiers'].get('minutes', 30.0)
-            
-        # Logic: Higher minutes = Slightly higher Fano Factor (more time for variance to accumulate?)
-        # Actually in Poisson processes, Var=Mean. Overdispersion comes from 'p' shifting.
-        # We'll use a curve: 
-        # Low Min (<20): 1.15 (Less time for crazy outliers)
-        # High Min (>34): 1.35 (Fatigue, role variation, "hot hand" potential)
         
-        fano_factor = 1.20 # Base
-        if minutes > 34: fano_factor = 1.35
-        elif minutes > 28: fano_factor = 1.28
-        elif minutes < 20: fano_factor = 1.15
+        heuristic_fano = 1.20
+        if minutes > 34: heuristic_fano = 1.35
+        elif minutes > 28: heuristic_fano = 1.28
+        elif minutes < 20: heuristic_fano = 1.15
+        
+        # Empirical Fano Factor (from actual game-to-game variance)
+        fano_source = "heuristic"
+        if player_variance and player_variance.get('reb_variance') and player_variance.get('reb_mean'):
+            reb_var = player_variance['reb_variance']
+            reb_mean = player_variance['reb_mean']
+            if reb_mean > 0:
+                empirical_fano = reb_var / reb_mean
+                # Sanity clamp: empirical fano between 0.8 and 3.0
+                empirical_fano = max(0.8, min(3.0, empirical_fano))
+                # Blend: 70% empirical, 30% heuristic (trust real data more)
+                fano_factor = (empirical_fano * 0.70) + (heuristic_fano * 0.30)
+                fano_source = "empirical"
+            else:
+                fano_factor = heuristic_fano
+        else:
+            fano_factor = heuristic_fano
         
         variance = final_mean * fano_factor
         
@@ -91,7 +96,11 @@ class ReboundSimulator:
             'mean_sim': np.mean(samples),
             'std_sim': np.std(samples),
             'samples': samples,
-            'params': {'n': n, 'p': p, 'final_mean': final_mean, 'model_mean': model_mean, 'fano': fano_factor}
+            'params': {
+                'n': n, 'p': p, 'final_mean': final_mean, 
+                'model_mean': model_mean, 'fano': round(fano_factor, 3),
+                'fano_source': fano_source
+            }
         }
 
     def get_probabilities(self, sim_result, line):

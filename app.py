@@ -41,6 +41,10 @@ def predict():
         line_val = data.get('line')
         line = float(line_val) if line_val else None
         
+        # Odds Input (American odds, e.g. -110)
+        odds_val = data.get('odds')
+        american_odds = int(odds_val) if odds_val else None
+        
         matchup_val = data.get('matchup')
         matchup = matchup_val if matchup_val else None
 
@@ -76,8 +80,9 @@ def predict():
 
         mean_proj = proj_data['projection']
         
-        # Simulation
-        sim_res = simulator.simulate(proj_data, market_line=line)
+        # Simulation (with variance-aware data)
+        player_var_data = proj_data.get('player_variance')
+        sim_res = simulator.simulate(proj_data, market_line=line, player_variance=player_var_data)
         
         # Prepare Response
         response = {
@@ -163,8 +168,21 @@ def predict():
                 'recommendation': f"{tier}",
                 'rec_color': rec_color,
                 'edge': round(edge * 100, 1),
-                'hit_rate': round(hit_rate * 100, 0)
+                'hit_rate': round(hit_rate * 100, 0),
+                'fano': sim_res['params'].get('fano'),
+                'fano_source': sim_res['params'].get('fano_source', 'heuristic')
             }
+            
+            # True Edge from American Odds (if provided)
+            if american_odds:
+                if american_odds < 0:
+                    implied_prob = abs(american_odds) / (abs(american_odds) + 100)
+                else:
+                    implied_prob = 100 / (american_odds + 100)
+                true_edge = confidence - implied_prob
+                response['analysis']['implied_prob'] = round(implied_prob * 100, 1)
+                response['analysis']['true_edge'] = round(true_edge * 100, 1)
+                response['analysis']['american_odds'] = american_odds
             
             # Generate summary
             summary = engineer.generate_pick_summary(proj_data, line)
@@ -175,6 +193,114 @@ def predict():
 
         return jsonify(response)
 
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/parlay', methods=['POST'])
+def parlay():
+    """
+    Parlay Builder: Accepts multiple picks and calculates combined probability.
+    Each leg: {player, opponent, spread, line, direction}
+    """
+    try:
+        data = request.get_json()
+        legs = data.get('legs', [])
+        
+        if len(legs) < 2:
+            return jsonify({'error': 'Parlay requires at least 2 legs'}), 400
+        if len(legs) > 8:
+            return jsonify({'error': 'Maximum 8 legs allowed'}), 400
+        
+        results = []
+        combined_prob = 1.0
+        
+        for i, leg in enumerate(legs):
+            try:
+                player_name = leg.get('player')
+                opp_team = leg.get('opponent', '').upper()
+                spread = float(leg.get('spread', 0.0))
+                line = float(leg.get('line', 0))
+                direction = leg.get('direction', 'OVER').upper()
+                
+                if not player_name or not opp_team or not line:
+                    results.append({'leg': i+1, 'error': 'Missing player, opponent, or line'})
+                    combined_prob = 0
+                    continue
+                
+                # Get Player ID
+                pid = loader.get_player_id(player_name)
+                if not pid:
+                    results.append({'leg': i+1, 'player': player_name, 'error': f"Player '{player_name}' not found"})
+                    combined_prob = 0
+                    continue
+                
+                # Get rest data
+                p_info = loader.get_common_player_info(pid)
+                team_id = p_info.iloc[0]['TEAM_ID'] if not p_info.empty else None
+                opp_id = loader.get_team_id(opp_team)
+                team_rest = loader.get_days_rest(team_id) if team_id else 1
+                opp_rest = loader.get_days_rest(opp_id) if opp_id else 1
+                
+                # Run projection
+                proj_data = engineer.compute_composite_projection(
+                    pid, opp_team, spread=spread,
+                    home_game=True, days_rest=team_rest, opp_days_rest=opp_rest
+                )
+                
+                if not proj_data or 'error' in proj_data:
+                    results.append({'leg': i+1, 'player': player_name, 'error': proj_data.get('error', 'Projection failed')})
+                    combined_prob = 0
+                    continue
+                
+                # Simulate
+                player_var_data = proj_data.get('player_variance')
+                sim_res = simulator.simulate(proj_data, market_line=line, player_variance=player_var_data)
+                probs = simulator.get_probabilities(sim_res, line)
+                
+                # Get directional probability
+                if direction == 'OVER':
+                    leg_prob = probs['over_probability']
+                else:
+                    leg_prob = probs['under_probability']
+                
+                combined_prob *= leg_prob
+                
+                results.append({
+                    'leg': i+1,
+                    'player': proj_data.get('player', player_name),
+                    'opponent': opp_team,
+                    'projection': round(proj_data['projection'], 1),
+                    'line': line,
+                    'direction': direction,
+                    'probability': round(leg_prob * 100, 1),
+                    'over_prob': round(probs['over_probability'] * 100, 1),
+                    'under_prob': round(probs['under_probability'] * 100, 1)
+                })
+                
+            except Exception as leg_err:
+                results.append({'leg': i+1, 'player': leg.get('player', '?'), 'error': str(leg_err)})
+                combined_prob = 0
+        
+        # Calculate parlay odds from combined probability
+        if combined_prob > 0:
+            if combined_prob >= 0.5:
+                parlay_american = round(-100 * combined_prob / (1 - combined_prob))
+            else:
+                parlay_american = round(100 * (1 - combined_prob) / combined_prob)
+            parlay_decimal = round(1 / combined_prob, 2)
+        else:
+            parlay_american = 0
+            parlay_decimal = 0
+        
+        return jsonify({
+            'legs': results,
+            'combined_probability': round(combined_prob * 100, 2),
+            'parlay_american_odds': parlay_american,
+            'parlay_decimal_odds': parlay_decimal,
+            'num_legs': len(legs)
+        })
+        
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
