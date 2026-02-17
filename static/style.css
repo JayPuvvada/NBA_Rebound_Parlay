@@ -845,3 +845,27 @@ tr:hover {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* --- CONFIDENCE BADGE --- */
+.confidence-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.8rem;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    margin-top: 0.6rem;
+}
+
+.confidence-empirical {
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #22c55e;
+}
+
+.confidence-heuristic {
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    color: #fbbf24;
+}

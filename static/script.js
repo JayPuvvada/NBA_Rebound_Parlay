@@ -121,6 +121,26 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 document.getElementById('res-edge').textContent = data.analysis.edge + '%';
             }
+
+            // Confidence Badge (Fano source)
+            const badge = document.getElementById('confidence-badge');
+            const badgeIcon = document.getElementById('confidence-icon');
+            const badgeText = document.getElementById('confidence-text');
+            if (data.analysis.fano_source && badge) {
+                badge.classList.remove('hidden');
+                const fanoVal = data.analysis.fano ? data.analysis.fano.toFixed(2) : '?';
+                if (data.analysis.fano_source === 'empirical') {
+                    badgeIcon.textContent = '🟢';
+                    badgeText.textContent = `Variance: Real Data (Fano ${fanoVal})`;
+                    badge.className = 'confidence-badge confidence-empirical';
+                } else {
+                    badgeIcon.textContent = '🟡';
+                    badgeText.textContent = `Variance: Estimated (Fano ${fanoVal})`;
+                    badge.className = 'confidence-badge confidence-heuristic';
+                }
+            } else if (badge) {
+                badge.classList.add('hidden');
+            }
         } else {
             analysisDiv.classList.add('hidden');
         }
@@ -698,11 +718,15 @@ document.addEventListener('DOMContentLoaded', () => {
             parlayResults.classList.add('hidden');
             calcParlayBtn.disabled = true;
 
+            // Get offered odds (optional)
+            const offeredOddsEl = document.getElementById('parlay-offered-odds');
+            const parlayOdds = offeredOddsEl && offeredOddsEl.value ? offeredOddsEl.value : null;
+
             try {
                 const response = await fetch('/parlay', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ legs })
+                    body: JSON.stringify({ legs, parlay_odds: parlayOdds })
                 });
 
                 const data = await response.json();
@@ -734,7 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ao = data.parlay_american_odds;
                 const dec = data.parlay_decimal_odds;
                 const aoStr = ao >= 0 ? `+${ao}` : `${ao}`;
-                parlayCombined.innerHTML = `
+                let combinedHTML = `
                     <div class="parlay-combined-row">
                         <span class="parlay-stat-label">Combined Probability</span>
                         <span class="parlay-stat-value" style="color: ${cp > 30 ? '#22c55e' : '#f87171'}">${cp.toFixed(1)}%</span>
@@ -748,6 +772,39 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="parlay-stat-value">${data.num_legs}</span>
                     </div>
                 `;
+
+                // Correlation Warning
+                if (data.correlation && data.correlation.correlated_pairs > 0) {
+                    combinedHTML += `
+                        <div class="parlay-combined-row" style="border-top: 1px solid rgba(255,255,255,0.1); margin-top: 0.5rem; padding-top: 0.5rem;">
+                            <span class="parlay-stat-label">⚠️ Same-Game Correlation</span>
+                            <span class="parlay-stat-value" style="color: #fbbf24; font-size: 0.9rem;">
+                                -${data.correlation.penalty_applied}% (${data.correlation.correlated_games.join(', ')})
+                            </span>
+                        </div>
+                    `;
+                }
+
+                // EV Display
+                if (data.ev) {
+                    const evColor = data.ev.is_positive_ev ? '#22c55e' : '#f87171';
+                    const evSign = data.ev.ev_pct > 0 ? '+' : '';
+                    const evLabel = data.ev.is_positive_ev ? '✅ +EV — Take this bet' : '❌ -EV — Skip this';
+                    const offeredStr = data.ev.offered_odds >= 0 ? `+${data.ev.offered_odds}` : `${data.ev.offered_odds}`;
+                    combinedHTML += `
+                        <div class="parlay-ev-box" style="margin-top: 0.8rem; padding: 0.8rem; background: ${data.ev.is_positive_ev ? 'rgba(34,197,94,0.1)' : 'rgba(248,113,113,0.1)'}; border: 1px solid ${evColor}; border-radius: 10px;">
+                            <div class="parlay-combined-row">
+                                <span class="parlay-stat-label">Offered: ${offeredStr} (${data.ev.offered_implied}% implied)</span>
+                                <span class="parlay-stat-value" style="color: ${evColor}">${evSign}${data.ev.ev_pct}% EV</span>
+                            </div>
+                            <div style="text-align: center; margin-top: 0.4rem; font-weight: 600; color: ${evColor}; font-size: 0.85rem;">
+                                ${evLabel}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                parlayCombined.innerHTML = combinedHTML;
 
                 parlayResults.classList.remove('hidden');
 

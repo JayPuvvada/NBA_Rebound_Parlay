@@ -202,10 +202,12 @@ def parlay():
     """
     Parlay Builder: Accepts multiple picks and calculates combined probability.
     Each leg: {player, opponent, spread, line, direction}
+    Supports: correlation penalty for same-game legs, EV calculation.
     """
     try:
         data = request.get_json()
         legs = data.get('legs', [])
+        parlay_odds_input = data.get('parlay_odds')  # American odds offered
         
         if len(legs) < 2:
             return jsonify({'error': 'Parlay requires at least 2 legs'}), 400
@@ -214,6 +216,7 @@ def parlay():
         
         results = []
         combined_prob = 1.0
+        game_teams = {}  # Track teams per game for correlation
         
         for i, leg in enumerate(legs):
             try:
@@ -238,9 +241,16 @@ def parlay():
                 # Get rest data
                 p_info = loader.get_common_player_info(pid)
                 team_id = p_info.iloc[0]['TEAM_ID'] if not p_info.empty else None
+                team_abbrev = p_info.iloc[0].get('TEAM_ABBREVIATION', '') if not p_info.empty else ''
                 opp_id = loader.get_team_id(opp_team)
                 team_rest = loader.get_days_rest(team_id) if team_id else 1
                 opp_rest = loader.get_days_rest(opp_id) if opp_id else 1
+                
+                # Track game for correlation detection
+                game_key = tuple(sorted([team_abbrev.upper(), opp_team]))
+                if game_key not in game_teams:
+                    game_teams[game_key] = []
+                game_teams[game_key].append(i)
                 
                 # Run projection
                 proj_data = engineer.compute_composite_projection(
@@ -270,6 +280,7 @@ def parlay():
                     'leg': i+1,
                     'player': proj_data.get('player', player_name),
                     'opponent': opp_team,
+                    'team': team_abbrev.upper(),
                     'projection': round(proj_data['projection'], 1),
                     'line': line,
                     'direction': direction,
@@ -282,23 +293,64 @@ def parlay():
                 results.append({'leg': i+1, 'player': leg.get('player', '?'), 'error': str(leg_err)})
                 combined_prob = 0
         
-        # Calculate parlay odds from combined probability
-        if combined_prob > 0:
-            if combined_prob >= 0.5:
-                parlay_american = round(-100 * combined_prob / (1 - combined_prob))
+        # Correlation Penalty: same-game legs share pace/environment
+        # Apply ~5% haircut per correlated pair
+        correlated_pairs = 0
+        correlated_games = []
+        for game_key, leg_indices in game_teams.items():
+            if len(leg_indices) > 1:
+                # Number of pairs = n*(n-1)/2
+                pairs = len(leg_indices) * (len(leg_indices) - 1) // 2
+                correlated_pairs += pairs
+                correlated_games.append(f"{game_key[0]} vs {game_key[1]}")
+        
+        correlation_penalty = 0.95 ** correlated_pairs  # ~5% per pair
+        adjusted_prob = combined_prob * correlation_penalty
+        
+        # Calculate parlay odds from adjusted probability
+        if adjusted_prob > 0:
+            if adjusted_prob >= 0.5:
+                parlay_american = round(-100 * adjusted_prob / (1 - adjusted_prob))
             else:
-                parlay_american = round(100 * (1 - combined_prob) / combined_prob)
-            parlay_decimal = round(1 / combined_prob, 2)
+                parlay_american = round(100 * (1 - adjusted_prob) / adjusted_prob)
+            parlay_decimal = round(1 / adjusted_prob, 2)
         else:
             parlay_american = 0
             parlay_decimal = 0
         
+        # EV Calculation (if user entered offered odds)
+        ev_info = None
+        if parlay_odds_input:
+            offered_odds = int(parlay_odds_input)
+            if offered_odds < 0:
+                offered_implied = abs(offered_odds) / (abs(offered_odds) + 100)
+                offered_decimal = 1 + (100 / abs(offered_odds))
+            else:
+                offered_implied = 100 / (offered_odds + 100)
+                offered_decimal = 1 + (offered_odds / 100)
+            
+            ev_pct = (adjusted_prob - offered_implied) * 100
+            ev_info = {
+                'offered_odds': offered_odds,
+                'offered_implied': round(offered_implied * 100, 1),
+                'ev_pct': round(ev_pct, 1),
+                'is_positive_ev': bool(ev_pct > 0),
+                'offered_decimal': round(offered_decimal, 2)
+            }
+        
         return jsonify({
             'legs': results,
-            'combined_probability': round(combined_prob * 100, 2),
+            'raw_probability': round(combined_prob * 100, 2),
+            'combined_probability': round(adjusted_prob * 100, 2),
             'parlay_american_odds': parlay_american,
             'parlay_decimal_odds': parlay_decimal,
-            'num_legs': len(legs)
+            'num_legs': len(legs),
+            'correlation': {
+                'correlated_pairs': correlated_pairs,
+                'penalty_applied': round((1 - correlation_penalty) * 100, 1),
+                'correlated_games': correlated_games
+            },
+            'ev': ev_info
         })
         
     except Exception as e:
