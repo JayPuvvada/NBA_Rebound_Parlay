@@ -2,6 +2,13 @@ import pandas as pd
 import numpy as np
 from src.data_loader import NBADataLoader
 
+def normalize_name(name):
+    try:
+        from unidecode import unidecode
+    except ImportError:
+        def unidecode(s): return s
+    return unidecode(name).lower().replace('.', '').strip()
+
 class FeatureEngineer:
     def __init__(self, data_loader):
         self.loader = data_loader
@@ -9,7 +16,7 @@ class FeatureEngineer:
         # If Opponent 3PA Rate > 40%, adjust expectations:
         self.LONG_REB_MATRIX = {
             'G': 1.08,  # Guards get +8% boost (scoop long boards)
-    'F': 1.00,  # Forwards are neutral
+            'F': 1.00,  # Forwards are neutral
             'C': 0.96   # Centers get -4% penalty
         }
 
@@ -28,13 +35,6 @@ class FeatureEngineer:
         
         notes = []
         
-        def normalize_name(name):
-            try:
-                from unidecode import unidecode
-            except ImportError:
-                def unidecode(s): return s
-            return unidecode(name).lower().replace('.', '').strip()
-
         for _, row in roster.iterrows():
             name = row['PLAYER']
             norm_name = normalize_name(name)
@@ -259,13 +259,6 @@ class FeatureEngineer:
         p_info = self.loader.get_common_player_info(player_id)
         p_name = p_info.iloc[0].get('DISPLAY_FIRST_LAST', 'Unknown')
         
-        def normalize_name(name):
-            try:
-                from unidecode import unidecode
-            except ImportError:
-                def unidecode(s): return s
-            return unidecode(name).lower().replace('.', '').strip()
-
         p_status = injury_report.get(normalize_name(p_name), 'Active')
         if 'out' in p_status.lower() or 'inactive' in p_status.lower() or 'nwt' in p_status.lower():
             return 0.0, f"{p_name} is listed as {p_status}!"
@@ -322,59 +315,8 @@ class FeatureEngineer:
         Calculates a SOFT cap if the team is projecting way more rebounds than available.
         Uses a sqrt damping to avoid harsh penalties.
         """
-        # 1. Get Active Roster from recent game
-        gamelogs = self.loader.get_team_gamelog(team_id)
-        if gamelogs.empty:
-            return 1.0
-            
-        recent_game_id = gamelogs.iloc[0]['Game_ID']
-        
-        try:
-            from nba_api.stats.endpoints import boxscoretraditionalv3
-            box = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=recent_game_id)
-            player_stats = box.get_data_frames()[0]
-        except Exception as e:
-            # Fallback
-            return 1.0
-
-        if 'personId' in player_stats.columns:
-            player_stats['PLAYER_ID'] = player_stats['personId']
-            player_stats['TEAM_ID'] = player_stats['teamId']
-
-        # Filter for my team
-        my_team_players = player_stats[player_stats['TEAM_ID'] == team_id].copy()
-        
-        # 2. Estimate Team Total Projection
-        total_projected_rebs = 0.0
-        
-        # We need a quick estimate of teammates without recursion hell.
-        # Use season avg REB multiplied by a simple minutes scaling
-        valid_teammates = 0
-        
-        for _, row in my_team_players.iterrows():
-            pid = row['PLAYER_ID']
-            if pid == current_player_id: continue
-            
-            # Use cached season avg if possible, else 0 (optimization)
-            # Fetching logs for every teammate is too slow. 
-            # We will use the 'REB' column from the last boxscore as a proxy for "current form"
-            # heavily smoothed by just assuming they produce standard rates.
-            
-            # Better Fast Approach: Use the stats already in 'player_stats' for that game?
-            # No, that's one game sample.
-            # Let's just trust the process: Assume teammates get their boxscore rebounds from last game? 
-            # No, that's too volatile.
-            
-            # Correct Fast Approach:
-            # We assume the team creates ~44 rebounds.
-            # We only care if *I* am taking too many.
-            pass
-
-        # REVISED APPROACH: Global Team Cap check
-        # Instead of summing teammates, let's look at Team Avg per 48 vs Current Projection.
-        
-        # We'll skip complex summing and just use a heuristic:
-        # If Current Player Project > 35% of Team Avg, apply soft dampener.
+        # We skip complex summing and use a simple heuristic if needed.
+        # Returning 1.0 for now.
         return 1.0
 
     def compute_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, opp_days_rest=1, matchup_factor=1.0):
@@ -574,13 +516,6 @@ class FeatureEngineer:
             # Fetch injury note for manual matchup too
             if m_pid:
                 injury_report = self.loader.get_injury_report()
-                def normalize_name(name):
-                    try:
-                        from unidecode import unidecode
-                    except ImportError:
-                        def unidecode(s): return s
-                    return unidecode(name).lower().replace('.', '').strip()
-
                 norm_name = normalize_name(matchup_player)
                 m_note = injury_report.get(norm_name, 'Active')
                 # Normalize m_note if not in report

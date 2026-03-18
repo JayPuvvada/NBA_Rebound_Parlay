@@ -376,9 +376,14 @@ def cheat_sheet():
         req_sub_team = req_sub_team.upper()
 
         # 1. Get Games for Date
-        games = loader.get_games_for_date(req_date)
-        if not games:
-            return jsonify({'error': f"No games found for {req_date}."}), 404
+        try:
+            games = loader.get_games_for_date(req_date)
+            if not games:
+                return jsonify({'error': f"No games found for {req_date}. The NBA API might be blocking this IP or timing out."}), 404
+        except Exception as e:
+            if "timeout" in str(e).lower() or "read" in str(e).lower():
+                return jsonify({'error': "NBA API Timeout: The server is likely blocking requests from this cloud IP address."}), 504
+            return jsonify({'error': f"Failed to fetch games: {str(e)}"}), 500
             
         # 2. Find Specific Game
         target_game = None
@@ -429,133 +434,159 @@ def cheat_sheet():
         for team_data in [(home_id, home_team, away_team), (away_id, away_team, home_team)]:
             tid, t_code, opp_code = team_data
             
-            # Fetch Roster
-            roster = loader.get_team_roster(tid)
-            
-            # We need adv stats to get minutes
-            # Use loader cache
-            loader.get_player_advanced_stats(0) # Prime cache
-            adv_stats = loader._get_from_cache(f"league_player_stats_advanced_{loader.season}")
-            
-            if not roster.empty and adv_stats is not None:
-                 # Merge
-                 merged = pd.merge(roster, adv_stats[['PLAYER_ID', 'MIN']], on='PLAYER_ID')
-                 merged = merged.sort_values('MIN', ascending=False).head(5) # Top 5 rotation
-                 
-                 for _, player in merged.iterrows():
-                     pid = player['PLAYER_ID']
-                     pname = player['PLAYER']
-                     
-                     # Check Rest
-                     rest = loader.get_days_rest(tid)
-                     opp_rest_val = loader.get_days_rest(away_id if tid == home_id else home_id)
-                     
-                     try:
-                         proj = engineer.compute_composite_projection(
-                             pid, 
-                             opp_code, 
-                             days_rest=rest, 
-                             opp_days_rest=opp_rest_val,
-                             home_game=(tid == home_id)
-                         )
-                         
-                         if 'error' in proj or proj['projection'] < 4.0: 
-                             continue 
-                             
-                         # Get trend data from projection (already computed)
-                         trend_data = proj.get('trend_data', [])
-                             
-                         # Check Odds
-                         from unidecode import unidecode
-                         norm_name = unidecode(pname).lower().replace('.', '').strip()
-                         
-                         line_info = odds_map.get(norm_name)
-                         rec_tier = "Waiting for Line"
-                         edge = 0
-                         line_val = 0
-                         over_prob = 0
-                         under_prob = 0
-                         confidence = 0
-                         direction = "-"
-                         
-                         if line_info:
-                             line_val = line_info['line']
-                             odds_price = line_info.get('odds', -110)  # American odds
-                             
-                             # Run Simulation for EV
-                             sim = simulator.simulate(proj, market_line=line_val)
-                             probs = simulator.get_probabilities(sim, line_val)
-                             
-                             over_prob = round(probs['over_probability'] * 100, 1)
-                             under_prob = round(probs['under_probability'] * 100, 1)
-                             confidence = max(probs['over_probability'], probs['under_probability'])
-                             direction = "OVER" if probs['over_probability'] > probs['under_probability'] else "UNDER"
-                             
-                             # Calculate edge using implied probability from actual odds
-                             # Convert American odds to implied probability
-                             if odds_price < 0:
-                                 implied_prob = abs(odds_price) / (abs(odds_price) + 100)
-                             else:
-                                 implied_prob = 100 / (odds_price + 100)
-                             
-                             edge = confidence - implied_prob
-                             
-                             # Tier logic - require positive edge for any play recommendation
-                             if edge <= 0:
-                                 rec_tier = "🛑 AVOID"  # No edge = no play
-                             elif confidence > 0.635 and edge > 0.10: 
-                                 rec_tier = "🔥 STRONG PLAY"
-                             elif confidence > 0.585 and edge > 0.05: 
-                                 rec_tier = "✅ PLAY"
-                             elif direction == "OVER" and line_val < probs['ci_68'][0] and edge > 0: 
-                                 rec_tier = "🛡️ SAFE PLAY"
-                             elif confidence > 0.555 and edge > 0: 
-                                 rec_tier = "👉 LEAN"
-                             else: 
-                                 rec_tier = "🛑 AVOID"
-                         else:
-                             rec_tier = "-"
-                         
-                         # Build components for detail view
-                         components = {
-                             'Base Rebs': round(proj.get('base_rebounds', 0), 1),
-                             'Pace Factor': round(proj.get('pace_factor', 1.0), 2),
-                             'Opp Defense': round(proj.get('opp_factor', 1.0), 2),
-                             'DvP Mult': round(proj.get('dvp_mult', 1.0), 2),
-                             'Matchup Adj': round(proj.get('matchup_mult', 1.0), 2),
-                             'Home/Away': round(proj.get('home_away_mult', 1.0), 2),
-                             'Rest Factor': round(proj.get('rest_mult', 1.0), 2)
-                         }
-                             
-                         results.append({
-                             'player': pname,
-                             'player_id': pid,
-                             'team': t_code,
-                             'opponent': opp_code,
-                             'projection': round(proj['projection'], 1),
-                             'line': line_val if line_info else '-',
-                             'direction': direction,
-                             'tier': rec_tier,
-                             'edge_raw': edge,
-                             'rest_note': f"{rest}d vs {opp_rest_val}d",
-                             # Detail data
-                             'components': components,
-                             'trend': trend_data,
-                             'over_prob': over_prob,
-                             'under_prob': under_prob,
-                             'confidence': round(confidence * 100, 1) if line_info else 0
-                         })
-                         
-                     except Exception as e:
+            try:
+                # Fetch Roster
+                roster = loader.get_team_roster(tid)
+                
+                if roster.empty:
+                    print(f"DEBUG: Skipping team {t_code}: roster unavailable", flush=True)
+                    continue
+                    
+                # We need minutes played to filter rotation players. 
+                # Fetching full league advanced stats is too heavy and often rate-limited.
+                # Instead, fetch basic stats for the team.
+                team_players_stats = loader._retry_api_call(
+                    loader.leaguedashplayerstats.LeagueDashPlayerStats,
+                    season=loader.season,
+                    team_id_nullable=tid
+                ).get_data_frames()[0]
+                
+                # Merge roster with basic stats to get MIN
+                merged = pd.merge(roster, team_players_stats[['PLAYER_ID', 'MIN']], on='PLAYER_ID')
+                
+                # Filter out players who average less than 15 minutes to save API calls, then take top 5
+                merged = merged[merged['MIN'] >= 15.0]
+                merged = merged.sort_values('MIN', ascending=False).head(5) # Top 5 rotation
+            except Exception as team_err:
+                err_str = str(team_err).lower()
+                if "timeout" in err_str or "read" in err_str:
+                    return jsonify({'error': f"NBA API Timeout while fetching roster/stats for {t_code}. Cloud IPs are often blocked."}), 504
+                print(f"DEBUG: Failed to fetch roster/stats for {t_code}: {team_err}", flush=True)
+                continue
+
+            for _, player in merged.iterrows():
+                pid = player['PLAYER_ID']
+                pname = player['PLAYER']
+                
+                # Check Rest
+                rest = loader.get_days_rest(tid)
+                opp_rest_val = loader.get_days_rest(away_id if tid == home_id else home_id)
+                
+                try:
+                    proj = engineer.compute_composite_projection(
+                        pid, 
+                        opp_code, 
+                        days_rest=rest, 
+                        opp_days_rest=opp_rest_val,
+                        home_game=(tid == home_id)
+                    )
+                    
+                    if 'error' in proj or proj['projection'] < 4.0: 
+                        continue 
+                        
+                    # Get trend data from projection (already computed)
+                    trend_data = proj.get('trend_data', [])
+                        
+                    # Check Odds
+                    from unidecode import unidecode
+                    norm_name = unidecode(pname).lower().replace('.', '').strip()
+                    
+                    line_info = odds_map.get(norm_name)
+                    rec_tier = "Waiting for Line"
+                    edge = 0
+                    line_val = 0
+                    over_prob = 0
+                    under_prob = 0
+                    confidence = 0
+                    direction = "-"
+                    
+                    if line_info:
+                        line_val = line_info['line']
+                        odds_price = line_info.get('odds', -110)  # American odds
+                        
+                        # Run Simulation for EV
+                        sim = simulator.simulate(proj, market_line=line_val)
+                        probs = simulator.get_probabilities(sim, line_val)
+                        
+                        over_prob = round(probs['over_probability'] * 100, 1)
+                        under_prob = round(probs['under_probability'] * 100, 1)
+                        confidence = max(probs['over_probability'], probs['under_probability'])
+                        direction = "OVER" if probs['over_probability'] > probs['under_probability'] else "UNDER"
+                        
+                        # Calculate edge using implied probability from actual odds
+                        if odds_price < 0:
+                            implied_prob = abs(odds_price) / (abs(odds_price) + 100)
+                        else:
+                            implied_prob = 100 / (odds_price + 100)
+                        
+                        edge = confidence - implied_prob
+                        
+                        # Tier logic
+                        if edge <= 0:
+                            rec_tier = "🛑 AVOID"
+                        elif confidence > 0.635 and edge > 0.10: 
+                            rec_tier = "🔥 STRONG PLAY"
+                        elif confidence > 0.585 and edge > 0.05: 
+                            rec_tier = "✅ PLAY"
+                        elif direction == "OVER" and line_val < probs['ci_68'][0] and edge > 0: 
+                            rec_tier = "🛡️ SAFE PLAY"
+                        elif confidence > 0.555 and edge > 0: 
+                            rec_tier = "👉 LEAN"
+                        else: 
+                            rec_tier = "🛑 AVOID"
+                    else:
+                        rec_tier = "-"
+                    
+                    # Build components for detail view
+                    components = {
+                        'Base Rebs': round(proj.get('base_rebounds', 0), 1),
+                        'Pace Factor': round(proj.get('pace_factor', 1.0), 2),
+                        'Opp Defense': round(proj.get('opp_factor', 1.0), 2),
+                        'DvP Mult': round(proj.get('dvp_mult', 1.0), 2),
+                        'Matchup Adj': round(proj.get('matchup_mult', 1.0), 2),
+                        'Home/Away': round(proj.get('home_away_mult', 1.0), 2),
+                        'Rest Factor': round(proj.get('rest_mult', 1.0), 2)
+                    }
+                        
+                    results.append({
+                        'player': pname,
+                        'player_id': pid,
+                        'team': t_code,
+                        'opponent': opp_code,
+                        'projection': round(proj['projection'], 1),
+                        'line': line_val if line_info else '-',
+                        'direction': direction,
+                        'tier': rec_tier,
+                        'edge_raw': edge,
+                        'rest_note': f"{rest}d vs {opp_rest_val}d",
+                        # Detail data
+                        'components': components,
+                        'trend': trend_data,
+                        'over_prob': over_prob,
+                        'under_prob': under_prob,
+                        'confidence': round(confidence * 100, 1) if line_info else 0
+                    })
+                    
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "timeout" in err_str or "read" in err_str:
+                         print(f"Skipping {pname} due to NBA API Timeout: {e}")
+                    else:
                          print(f"Skipping {pname}: {e}")
-                         continue
+                    continue
 
         # Sort by Edge (Descending) -> then Projection
         results.sort(key=lambda x: (x['tier'] == "🔥 STRONG PLAY", x['edge_raw'], x['projection']), reverse=True)
         
+        if not results:
+            return jsonify({'error': "No players processed successfully. The NBA API might be rate-limiting or blocking this server's IP address."}), 502
+        
         return jsonify(results)
 
     except Exception as e:
+        err_str = str(e).lower()
+        if "timeout" in err_str or "read" in err_str or "max retries" in err_str:
+            return jsonify({'error': "NBA API Connection Error: This cloud server IP (Render) is likely blocked by stats.nba.com."}), 504
         return jsonify({'error': str(e)}), 500
 
 

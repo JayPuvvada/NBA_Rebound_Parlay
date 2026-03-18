@@ -448,10 +448,6 @@ button:disabled {
     width: auto;
 }
 
-.table-container {
-    overflow-x: auto;
-}
-
 table {
     width: 100%;
     border-collapse: collapse;
@@ -565,6 +561,7 @@ tr:hover {
 .table-container {
     max-height: 500px;
     overflow-y: auto;
+    overflow-x: auto;
     padding: 1rem;
 }
 

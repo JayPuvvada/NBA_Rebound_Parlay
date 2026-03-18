@@ -395,13 +395,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
             csLoading.classList.add('hidden');
 
+            if (!res.ok) {
+                const errMsg = data.error || 'Unknown server error';
+                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#ef4444; padding: 2rem;"><b>Error:</b> ${errMsg}</td></tr>`;
+                return;
+            }
+
             if (data.error) {
-                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:red;">${data.error}</td></tr>`;
+                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#ef4444; padding: 2rem;"><b>Error:</b> ${data.error}</td></tr>`;
                 return;
             }
 
             if (data.length === 0) {
-                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No players found.</td></tr>`;
+                csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 2rem;">No players found.</td></tr>`;
                 return;
             }
 
@@ -442,9 +448,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
         } catch (err) {
-            console.error(err);
+            console.error("Cheat Sheet Error:", err);
             csLoading.classList.add('hidden');
-            csBody.innerHTML = `<tr><td colspan="6">Error loading data. Check console.</td></tr>`;
+            csBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#ef4444; padding: 2rem;"><b>Error loading data:</b> Check your internet connection or the server logs. NBA API may be unresponsive.</td></tr>`;
         }
     }
 
@@ -673,6 +679,13 @@ document.addEventListener('DOMContentLoaded', () => {
             parlayModal.classList.add('hidden');
         });
     }
+
+    // Window click to close parlay modal
+    window.addEventListener('click', (e) => {
+        if (e.target === parlayModal) {
+            parlayModal.classList.add('hidden');
+        }
+    });
 
     if (addLegBtn) {
         addLegBtn.addEventListener('click', () => {

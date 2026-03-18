@@ -1,18 +1,72 @@
 import pandas as pd
-from nba_api.stats.endpoints import playergamelog, teamgamelog, leaguedashteamstats, commonplayerinfo, boxscoretraditionalv2, shotchartdetail, cumestatsteam
+from nba_api.stats.endpoints import playergamelog, teamgamelog, leaguedashteamstats, commonplayerinfo, boxscoretraditionalv2, shotchartdetail, cumestatsteam, leaguedashplayerstats
 import time
+
+def normalize_name(name):
+    try:
+        from unidecode import unidecode
+    except ImportError:
+        def unidecode(s): return s
+    return unidecode(name).lower().replace('.', '').strip()
+
+import random
+
+# A robust list of valid User-Agents to rotate
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+]
+
+# Base headers
+def get_random_headers():
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': 'https://www.nba.com/',
+        'Accept': 'application/json, text/plain, */*',
+        'x-nba-stats-origin': 'stats',
+        'x-nba-stats-token': 'true',
+        'Origin': 'https://www.nba.com',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+    }
 
 class NBADataLoader:
     def __init__(self, season='2025-26'):
         self.season = season
         # Simple in-memory cache to avoid spamming API during dev
         self._cache = {}
+        self.leaguedashplayerstats = leaguedashplayerstats
 
     def _get_from_cache(self, key):
         return self._cache.get(key)
 
     def _set_cache(self, key, value):
         self._cache[key] = value
+
+    def _retry_api_call(self, api_func, max_retries=3, **kwargs):
+        """Retry wrapper for nba_api calls with backoff."""
+        func_name = api_func.__name__ if hasattr(api_func, '__name__') else str(api_func)
+        for attempt in range(max_retries):
+            try:
+                # Add delay and jitter to avoid patterns
+                delay = 1.0 + (attempt * 1.5) + random.uniform(0.1, 0.5)
+                time.sleep(delay)
+                
+                # Use fresh headers every attempt to rotate User-Agent
+                headers = get_random_headers()
+                
+                return api_func(**kwargs, headers=headers, timeout=12)
+            except Exception as e:
+                print(f"DEBUG: API attempt {attempt+1}/{max_retries} for {func_name} failed: {e}", flush=True)
+                if attempt == max_retries - 1:
+                    raise
 
     def get_player_id(self, player_name):
         from nba_api.stats.static import players
@@ -54,8 +108,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
         
-        time.sleep(0.6) # Rate limit politeness
-        log = playergamelog.PlayerGameLog(player_id=player_id, season=self.season)
+        log = self._retry_api_call(
+            playergamelog.PlayerGameLog,
+            player_id=player_id, season=self.season
+        )
         df = log.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -66,8 +122,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
 
-        time.sleep(0.6)
-        log = teamgamelog.TeamGameLog(team_id=team_id, season=self.season)
+        log = self._retry_api_call(
+            teamgamelog.TeamGameLog,
+            team_id=team_id, season=self.season
+        )
         df = log.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -78,8 +136,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
 
-        time.sleep(0.6)
-        stats = leaguedashteamstats.LeagueDashTeamStats(season=self.season)
+        stats = self._retry_api_call(
+            leaguedashteamstats.LeagueDashTeamStats,
+            season=self.season
+        )
         df = stats.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -90,9 +150,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
              return self._get_from_cache(key)
         
-        time.sleep(0.6)
-        # Check argument name - usually measure_type_nullable
-        stats = leaguedashteamstats.LeagueDashTeamStats(season=self.season, measure_type_detailed_defense='Advanced')
+        stats = self._retry_api_call(
+            leaguedashteamstats.LeagueDashTeamStats,
+            season=self.season, measure_type_detailed_defense='Advanced'
+        )
         df = stats.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -100,35 +161,37 @@ class NBADataLoader:
     def get_opponent_stats_per_game(self):
         """
         Gets stats AGAINST teams (Opponent FG%, Rebounds Allowed, etc).
-        This is tricky in nba_api, often best derived from summing opponent logs 
-        or using specific defense dashboards.
-        For simplicity, we will use LeagueDashTeamStats with MeasureType='Opponent'.
         """
         key = f"league_opponent_stats_{self.season}"
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
 
-        time.sleep(0.6)
-        # Try 'Opponent' measure type
         try:
-            stats = leaguedashteamstats.LeagueDashTeamStats(season=self.season, measure_type_detailed_defense='Opponent') 
+            stats = self._retry_api_call(
+                leaguedashteamstats.LeagueDashTeamStats,
+                season=self.season, measure_type_detailed_defense='Opponent'
+            )
         except Exception as e:
             print(f"Error fetching opponent stats: {e}")
-            # Fallback to Base, though it lacks OPP cols
-            stats = leaguedashteamstats.LeagueDashTeamStats(season=self.season)
+            stats = self._retry_api_call(
+                leaguedashteamstats.LeagueDashTeamStats,
+                season=self.season
+            )
             
         df = stats.get_data_frames()[0]
         self._set_cache(key, df)
         return df
     
     def get_player_shot_chart(self, player_id, team_id):
-        """Useful for shot profile (3PA rate, paint attempts - though paint is often easier from dashes)"""
+        """Useful for shot profile"""
         key = f"shot_chart_{player_id}_{self.season}"
         if self._get_from_cache(key) is not None:
              return self._get_from_cache(key)
         
-        time.sleep(0.6)
-        shots = shotchartdetail.ShotChartDetail(player_id=player_id, team_id=team_id, season_nullable=self.season, context_measure_simple='FGA')
+        shots = self._retry_api_call(
+            shotchartdetail.ShotChartDetail,
+            player_id=player_id, team_id=team_id, season_nullable=self.season, context_measure_simple='FGA'
+        )
         df = shots.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -139,8 +202,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
         
-        time.sleep(0.6)
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+        info = self._retry_api_call(
+            commonplayerinfo.CommonPlayerInfo,
+            player_id=player_id
+        )
         df = info.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -152,8 +217,10 @@ class NBADataLoader:
         if self._get_from_cache(key) is not None:
              return self._get_from_cache(key)
         
-        time.sleep(0.6)
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=self.season)
+        roster = self._retry_api_call(
+            commonteamroster.CommonTeamRoster,
+            team_id=team_id, season=self.season
+        )
         df = roster.get_data_frames()[0]
         self._set_cache(key, df)
         return df
@@ -165,9 +232,9 @@ class NBADataLoader:
         df = self._get_from_cache(league_key)
         
         if df is None:
-            time.sleep(0.6)
             from nba_api.stats.endpoints import leaguedashplayerstats
-            stats = leaguedashplayerstats.LeagueDashPlayerStats(
+            stats = self._retry_api_call(
+                leaguedashplayerstats.LeagueDashPlayerStats,
                 season=self.season, 
                 measure_type_detailed_defense='Advanced'
             )
@@ -184,9 +251,11 @@ class NBADataLoader:
         df = self._get_from_cache(league_key)
         
         if df is None:
-            time.sleep(0.6)
             from nba_api.stats.endpoints import leaguehustlestatsplayer
-            stats = leaguehustlestatsplayer.LeagueHustleStatsPlayer(season=self.season)
+            stats = self._retry_api_call(
+                leaguehustlestatsplayer.LeagueHustleStatsPlayer,
+                season=self.season
+            )
             df = stats.get_data_frames()[0]
             self._set_cache(league_key, df)
             
@@ -199,15 +268,20 @@ class NBADataLoader:
         df = self._get_from_cache(league_key)
         
         if df is None:
-            time.sleep(0.6)
             from nba_api.stats.endpoints import leaguedashptstats
-            stats = leaguedashptstats.LeagueDashPtStats(
-                season=self.season,
-                pt_measure_type='Rebounding',
-                player_or_team='Player'
-            )
-            df = stats.get_data_frames()[0]
-            self._set_cache(league_key, df)
+            try:
+                stats = self._retry_api_call(
+                    leaguedashptstats.LeagueDashPtStats,
+                    season=self.season,
+                    pt_measure_type='Rebounding',
+                    player_or_team='Player'
+                )
+                df = stats.get_data_frames()[0]
+                self._set_cache(league_key, df)
+            except Exception as e:
+                print(f"DEBUG: Failed to fetch rebounding tracking stats: {e}", flush=True)
+                import pandas as pd
+                return pd.DataFrame()
             
         player_row = df[df['PLAYER_ID'] == player_id]
         return player_row
@@ -224,13 +298,6 @@ class NBADataLoader:
         from bs4 import BeautifulSoup
         
         injuries = {}
-
-        def normalize_name(name):
-            try:
-                from unidecode import unidecode
-            except ImportError:
-                def unidecode(s): return s
-            return unidecode(name).lower().replace('.', '').strip()
 
         # --- CBS SPORTS ---
         print("DEBUG: Fetching CBS Injuries...", flush=True)
@@ -314,13 +381,6 @@ class NBADataLoader:
         
         # Filter out injured players
         injury_report = self.get_injury_report()
-        
-        def normalize_name(name):
-            try:
-                from unidecode import unidecode
-            except ImportError:
-                def unidecode(s): return s
-            return unidecode(name).lower().replace('.', '').strip()
 
         def check_status(name):
             norm_name = normalize_name(name)
@@ -446,54 +506,86 @@ class NBADataLoader:
         except Exception as e:
             print(f"Error calculating rest: {e}")
             return 1 # Default
-        except Exception as e:
-            print(f"Error calculating rest: {e}")
-            return 1 # Default
 
     def get_games_for_date(self, date_str):
         """
         Get games for a specific date (YYYY-MM-DD).
+        Uses live scoreboard for today, ScoreboardV2 for past dates.
         """
         key = f"games_{date_str}"
         cached = self._get_from_cache(key)
         if cached: return cached
         
+        from datetime import datetime, date
+        
         try:
-            # Using ScoreboardV2 for specific dates
-            from nba_api.stats.endpoints import scoreboardv2
-            
-            print(f"DEBUG: Fetching games for {date_str}...", flush=True)
-            board = scoreboardv2.ScoreboardV2(game_date=date_str)
-            
-            # The structure of ScoreboardV2 is a bit different from live endpoint
-            # We get headers and row sets
-            games_dict = board.game_header.get_dict()
-            headers = games_dict['headers']
-            rows = games_dict['data']
+            # Check if the requested date is today
+            req_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            is_today = (req_date == date.today())
             
             games = []
             
-            # Helper to access by column name
-            def get_col(row, col_name):
+            # Try live scoreboard first (fast, reliable for today)
+            if is_today:
                 try:
-                    idx = headers.index(col_name)
-                    return row[idx]
-                except ValueError:
-                    return None
+                    from nba_api.live.nba.endpoints import scoreboard as live_sb
+                    print(f"DEBUG: Fetching today's games via live scoreboard...", flush=True)
+                    sb = live_sb.ScoreBoard()
+                    live_games = sb.games.get_dict()
+                    
+                    for g in live_games:
+                        ht = g.get('homeTeam', {})
+                        at = g.get('awayTeam', {})
+                        games.append({
+                            'game_id': g.get('gameId'),
+                            'home_id': ht.get('teamId'),
+                            'away_id': at.get('teamId')
+                        })
+                    
+                    print(f"DEBUG: Live scoreboard found {len(games)} games.", flush=True)
+                    
+                    if games:
+                        self._set_cache(key, games)
+                        return games
+                except Exception as live_err:
+                    print(f"DEBUG: Live scoreboard failed: {live_err}", flush=True)
             
-            for row in rows:
-                gid = get_col(row, 'GAME_ID')
-                hid = get_col(row, 'HOME_TEAM_ID')
-                vid = get_col(row, 'VISITOR_TEAM_ID')
+            # Fallback: ScoreboardV2 (for past dates or if live fails)
+            try:
+                from nba_api.stats.endpoints import scoreboardv2
                 
-                # We need simple dicts
-                games.append({
-                    'game_id': gid,
-                    'home_id': hid,
-                    'away_id': vid
-                    # We will resolve codes later or need another lookup
-                })
+                print(f"DEBUG: Fetching games for {date_str} via ScoreboardV2...", flush=True)
+                board = scoreboardv2.ScoreboardV2(
+                    game_date=date_str,
+                    timeout=30
+                )
                 
+                games_dict = board.game_header.get_dict()
+                headers = games_dict['headers']
+                rows = games_dict['data']
+                
+                def get_col(row, col_name):
+                    try:
+                        idx = headers.index(col_name)
+                        return row[idx]
+                    except ValueError:
+                        return None
+                
+                for row in rows:
+                    gid = get_col(row, 'GAME_ID')
+                    hid = get_col(row, 'HOME_TEAM_ID')
+                    vid = get_col(row, 'VISITOR_TEAM_ID')
+                    games.append({
+                        'game_id': gid,
+                        'home_id': hid,
+                        'away_id': vid
+                    })
+                    
+                print(f"DEBUG: ScoreboardV2 found {len(games)} games.", flush=True)
+                
+            except Exception as sb_err:
+                print(f"Error fetching games via ScoreboardV2: {sb_err}", flush=True)
+            
             self._set_cache(key, games)
             return games
 
