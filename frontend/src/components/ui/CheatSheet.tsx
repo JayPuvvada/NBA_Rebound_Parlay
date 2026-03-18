@@ -29,7 +29,7 @@ export function CheatSheet() {
       setError(null);
       setExpandedIdx(null);
       try {
-        const res = await fetch(`http://127.0.0.1:5001/games?date=${date}`);
+        const res = await fetch(`/games?date=${date}`);
         const json = await res.json();
         if (json.games && json.games.length > 0) {
           setGames(json.games);
@@ -54,7 +54,7 @@ export function CheatSheet() {
       setError(null);
       setExpandedIdx(null);
       try {
-        const res = await fetch(`http://127.0.0.1:5001/cheat-sheet?team=${selectedGame.home}&date=${date}&book=fanduel`);
+        const res = await fetch(`/cheat-sheet?team=${selectedGame.home}&date=${date}&book=fanduel`);
 
         if (!res.ok) {
           try {
