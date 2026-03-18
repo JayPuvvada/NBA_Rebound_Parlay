@@ -7,11 +7,13 @@ from src.model import ReboundSimulator
 import traceback
 import os
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 load_dotenv() # Load .env file
 
 # app configuration
 app = Flask(__name__)
+CORS(app)
 
 # Initialize components globally to avoid reloading on every request (Simulate cold start)
 try:
@@ -293,19 +295,55 @@ def parlay():
                 results.append({'leg': i+1, 'player': leg.get('player', '?'), 'error': str(leg_err)})
                 combined_prob = 0
         
-        # Correlation Penalty: same-game legs share pace/environment
-        # Apply ~5% haircut per correlated pair
-        correlated_pairs = 0
+        # -------------------------------------------------------------------
+        # Advanced Correlation Engine
+        # -------------------------------------------------------------------
+        # Rebounding is a zero-sum game. If Player A grabs a rebound, Player B cannot.
+        # This causes strong negative correlation between overs, and positive correlation between over/under.
+        
+        correlation_penalty = 1.0
         correlated_games = []
+        correlated_pairs = 0
+        
         for game_key, leg_indices in game_teams.items():
             if len(leg_indices) > 1:
-                # Number of pairs = n*(n-1)/2
-                pairs = len(leg_indices) * (len(leg_indices) - 1) // 2
-                correlated_pairs += pairs
                 correlated_games.append(f"{game_key[0]} vs {game_key[1]}")
+                # Evaluate every pair in this game
+                for idx1 in range(len(leg_indices)):
+                    for idx2 in range(idx1 + 1, len(leg_indices)):
+                        leg1 = results[leg_indices[idx1]]
+                        leg2 = results[leg_indices[idx2]]
+                        
+                        # Guard against failed legs
+                        if 'error' in leg1 or 'error' in leg2:
+                            continue
+                            
+                        is_teammates = (leg1['team'] == leg2['team'])
+                        dir1 = leg1['direction']
+                        dir2 = leg2['direction']
+                        
+                        multiplier = 1.0
+                        correlated_pairs += 1
+                        if is_teammates:
+                            # Teammate Rebounds
+                            if dir1 == 'OVER' and dir2 == 'OVER':
+                                multiplier = 0.85  # Strong Penalty (Zero-sum)
+                            elif dir1 == 'UNDER' and dir2 == 'UNDER':
+                                multiplier = 0.85  # Strong Penalty
+                            elif (dir1 == 'OVER' and dir2 == 'UNDER') or (dir1 == 'UNDER' and dir2 == 'OVER'):
+                                multiplier = 1.10  # Positive Correlation
+                        else:
+                            # Opponent Rebounds
+                            if dir1 == 'OVER' and dir2 == 'OVER':
+                                multiplier = 0.95  # Weak Penalty
+                            elif dir1 == 'UNDER' and dir2 == 'UNDER':
+                                multiplier = 0.95  # Weak Penalty
+                            elif (dir1 == 'OVER' and dir2 == 'UNDER') or (dir1 == 'UNDER' and dir2 == 'OVER'):
+                                multiplier = 1.02  # Weak Positive Correlation
+                                
+                        correlation_penalty *= multiplier
         
-        correlation_penalty = 0.95 ** correlated_pairs  # ~5% per pair
-        adjusted_prob = combined_prob * correlation_penalty
+        adjusted_prob = min(combined_prob * correlation_penalty, 0.99)
         
         # Calculate parlay odds from adjusted probability
         if adjusted_prob > 0:
@@ -347,14 +385,46 @@ def parlay():
             'num_legs': len(legs),
             'correlation': {
                 'correlated_pairs': correlated_pairs,
-                'penalty_applied': round((1 - correlation_penalty) * 100, 1),
-                'correlated_games': correlated_games
+                'penalty_multiplier': round(correlation_penalty, 3),
+                'correlated_games': list(set(correlated_games))
             },
             'ev': ev_info
         })
         
     except Exception as e:
         traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/games', methods=['GET'])
+def games_for_date():
+    """Return list of games for a given date so the UI can populate team dropdowns."""
+    try:
+        req_date = request.args.get('date')
+        if not req_date:
+            return jsonify({'error': 'Please provide a date parameter.'}), 400
+
+        games = loader.get_games_for_date(req_date)
+        if not games:
+            return jsonify({'games': [], 'message': f'No games found for {req_date}.'}), 200
+
+        id_to_code = {
+            1610612737: 'ATL', 1610612738: 'BOS', 1610612751: 'BKN', 1610612766: 'CHA', 1610612741: 'CHI',
+            1610612739: 'CLE', 1610612742: 'DAL', 1610612743: 'DEN', 1610612765: 'DET', 1610612744: 'GSW',
+            1610612745: 'HOU', 1610612754: 'IND', 1610612746: 'LAC', 1610612747: 'LAL', 1610612763: 'MEM',
+            1610612748: 'MIA', 1610612749: 'MIL', 1610612750: 'MIN', 1610612740: 'NOP', 1610612752: 'NYK',
+            1610612760: 'OKC', 1610612753: 'ORL', 1610612755: 'PHI', 1610612756: 'PHX', 1610612757: 'POR',
+            1610612758: 'SAC', 1610612759: 'SAS', 1610612761: 'TOR', 1610612762: 'UTA', 1610612764: 'WAS'
+        }
+
+        result = []
+        for g in games:
+            h_code = id_to_code.get(g['home_id'], 'UNK')
+            a_code = id_to_code.get(g['away_id'], 'UNK')
+            result.append({'home': h_code, 'away': a_code})
+
+        return jsonify({'games': result, 'date': req_date})
+
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/cheat-sheet', methods=['GET'])
@@ -374,6 +444,17 @@ def cheat_sheet():
             return jsonify({'error': 'Please select a Team and Date.'}), 400
             
         req_sub_team = req_sub_team.upper()
+
+        # LAZY LOAD CACHE (For Render Free Tier)
+        # Check if we need to rebuild the offline database before processing
+        from src.cache_manager import is_cache_stale, fetch_and_cache_data
+        if is_cache_stale():
+            print("DEBUG: Offline JSON cache is missing or stale. Triggering rebuild...", flush=True)
+            success = fetch_and_cache_data()
+            if success:
+                loader._load_offline_cache()
+            else:
+                print("DEBUG: Cache rebuild failed or timed out. Falling back to live API.", flush=True)
 
         # 1. Get Games for Date
         try:
@@ -444,12 +525,16 @@ def cheat_sheet():
                     
                 # We need minutes played to filter rotation players. 
                 # Fetching full league advanced stats is too heavy and often rate-limited.
-                # Instead, fetch basic stats for the team.
-                team_players_stats = loader._retry_api_call(
-                    loader.leaguedashplayerstats.LeagueDashPlayerStats,
-                    season=loader.season,
-                    team_id_nullable=tid
-                ).get_data_frames()[0]
+                # Use the offline cache if available.
+                league_base = loader._get_from_cache(f"league_player_stats_base_{loader.season}")
+                if league_base is not None:
+                    team_players_stats = league_base[league_base['TEAM_ID'] == tid]
+                else:
+                    team_players_stats = loader._retry_api_call(
+                        loader.leaguedashplayerstats.LeagueDashPlayerStats,
+                        season=loader.season,
+                        team_id_nullable=tid
+                    ).get_data_frames()[0]
                 
                 # Merge roster with basic stats to get MIN
                 merged = pd.merge(roster, team_players_stats[['PLAYER_ID', 'MIN']], on='PLAYER_ID')
@@ -564,7 +649,9 @@ def cheat_sheet():
                         'trend': trend_data,
                         'over_prob': over_prob,
                         'under_prob': under_prob,
-                        'confidence': round(confidence * 100, 1) if line_info else 0
+                        'confidence': round(confidence * 100, 1) if line_info else 0,
+                        'injuries': proj.get('injuries', {}),
+                        'summary': engineer.generate_pick_summary(proj, line_val) if line_info else f"{pname} projects for {round(proj['projection'], 1)} rebounds. No line available yet."
                     })
                     
                 except Exception as e:

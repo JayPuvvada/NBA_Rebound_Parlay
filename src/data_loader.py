@@ -43,6 +43,54 @@ class NBADataLoader:
         # Simple in-memory cache to avoid spamming API during dev
         self._cache = {}
         self.leaguedashplayerstats = leaguedashplayerstats
+        self._load_offline_cache()
+
+    def _load_offline_cache(self):
+        """Loads data from the daily JSON cache if it's fresh enough."""
+        import os
+        import json
+        import time
+        cache_file = 'data/nba_cache.json'
+        
+        if not os.path.exists(cache_file):
+            return
+
+        try:
+            file_mod_time = os.path.getmtime(cache_file)
+            hours_old = (time.time() - file_mod_time) / 3600
+            
+            # If the cache is too old, we let the live API take over or trigger a background refresh
+            if hours_old > 12:
+                print("DEBUG: Offline cache is stale (>12 hours). Will rely on live API.")
+                return
+                
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                
+            if data['season'] != self.season:
+                return
+
+            print("DEBUG: Loaded offline cache successfully!", flush=True)
+            cache = data['data']
+            
+            # Map the JSON arrays back to Pandas DataFrames in our memory cache
+            keys_to_map = [
+                'league_player_stats_advanced', 'league_player_stats_base',
+                'league_team_stats_advanced', 'league_opponent_stats',
+                'league_hustle_stats', 'league_rebounding_tracking'
+            ]
+            
+            for key in keys_to_map:
+                if key in cache:
+                    self._cache[f"{key}_{self.season}"] = pd.DataFrame(cache[key])
+                    
+            # Load rosters
+            if 'rosters' in cache:
+                for team_id, roster_data in cache['rosters'].items():
+                    self._cache[f"roster_{team_id}_{self.season}"] = pd.DataFrame(roster_data)
+
+        except Exception as e:
+            print(f"DEBUG: Failed to load offline cache: {e}", flush=True)
 
     def _get_from_cache(self, key):
         return self._cache.get(key)
@@ -62,7 +110,7 @@ class NBADataLoader:
                 # Use fresh headers every attempt to rotate User-Agent
                 headers = get_random_headers()
                 
-                return api_func(**kwargs, headers=headers, timeout=12)
+                return api_func(**kwargs, headers=headers, timeout=30)
             except Exception as e:
                 print(f"DEBUG: API attempt {attempt+1}/{max_retries} for {func_name} failed: {e}", flush=True)
                 if attempt == max_retries - 1:
@@ -510,83 +558,65 @@ class NBADataLoader:
     def get_games_for_date(self, date_str):
         """
         Get games for a specific date (YYYY-MM-DD).
-        Uses live scoreboard for today, ScoreboardV2 for past dates.
+        Always uses ScoreboardV2 with the explicit date string to guarantee
+        the correct slate regardless of time-of-day or timezone.
         """
         key = f"games_{date_str}"
         cached = self._get_from_cache(key)
         if cached: return cached
         
-        from datetime import datetime, date
-        
         try:
-            # Check if the requested date is today
-            req_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            is_today = (req_date == date.today())
+            from nba_api.stats.endpoints import scoreboardv2
             
             games = []
+            seen_game_ids = set()
             
-            # Try live scoreboard first (fast, reliable for today)
-            if is_today:
+            print(f"DEBUG: Fetching games for {date_str} via ScoreboardV2...", flush=True)
+            
+            # Use retry logic to handle rate-limiting
+            for attempt in range(3):
                 try:
-                    from nba_api.live.nba.endpoints import scoreboard as live_sb
-                    print(f"DEBUG: Fetching today's games via live scoreboard...", flush=True)
-                    sb = live_sb.ScoreBoard()
-                    live_games = sb.games.get_dict()
+                    board = scoreboardv2.ScoreboardV2(
+                        game_date=date_str,
+                        timeout=15
+                    )
                     
-                    for g in live_games:
-                        ht = g.get('homeTeam', {})
-                        at = g.get('awayTeam', {})
+                    games_dict = board.game_header.get_dict()
+                    headers = games_dict['headers']
+                    rows = games_dict['data']
+                    
+                    def get_col(row, col_name):
+                        try:
+                            idx = headers.index(col_name)
+                            return row[idx]
+                        except ValueError:
+                            return None
+                    
+                    for row in rows:
+                        gid = get_col(row, 'GAME_ID')
+                        if gid in seen_game_ids:
+                            continue
+                        seen_game_ids.add(gid)
+                        
+                        hid = get_col(row, 'HOME_TEAM_ID')
+                        vid = get_col(row, 'VISITOR_TEAM_ID')
                         games.append({
-                            'game_id': g.get('gameId'),
-                            'home_id': ht.get('teamId'),
-                            'away_id': at.get('teamId')
+                            'game_id': gid,
+                            'home_id': hid,
+                            'away_id': vid
                         })
                     
-                    print(f"DEBUG: Live scoreboard found {len(games)} games.", flush=True)
+                    print(f"DEBUG: ScoreboardV2 found {len(games)} unique games for {date_str}.", flush=True)
+                    break  # Success
                     
-                    if games:
-                        self._set_cache(key, games)
-                        return games
-                except Exception as live_err:
-                    print(f"DEBUG: Live scoreboard failed: {live_err}", flush=True)
+                except Exception as retry_err:
+                    print(f"DEBUG: ScoreboardV2 attempt {attempt+1} failed: {retry_err}", flush=True)
+                    if attempt < 2:
+                        import time
+                        time.sleep(2)
             
-            # Fallback: ScoreboardV2 (for past dates or if live fails)
-            try:
-                from nba_api.stats.endpoints import scoreboardv2
-                
-                print(f"DEBUG: Fetching games for {date_str} via ScoreboardV2...", flush=True)
-                board = scoreboardv2.ScoreboardV2(
-                    game_date=date_str,
-                    timeout=30
-                )
-                
-                games_dict = board.game_header.get_dict()
-                headers = games_dict['headers']
-                rows = games_dict['data']
-                
-                def get_col(row, col_name):
-                    try:
-                        idx = headers.index(col_name)
-                        return row[idx]
-                    except ValueError:
-                        return None
-                
-                for row in rows:
-                    gid = get_col(row, 'GAME_ID')
-                    hid = get_col(row, 'HOME_TEAM_ID')
-                    vid = get_col(row, 'VISITOR_TEAM_ID')
-                    games.append({
-                        'game_id': gid,
-                        'home_id': hid,
-                        'away_id': vid
-                    })
-                    
-                print(f"DEBUG: ScoreboardV2 found {len(games)} games.", flush=True)
-                
-            except Exception as sb_err:
-                print(f"Error fetching games via ScoreboardV2: {sb_err}", flush=True)
-            
-            self._set_cache(key, games)
+            if games:
+                self._set_cache(key, games)
             return games
 
         except Exception as e:

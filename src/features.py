@@ -216,6 +216,20 @@ class FeatureEngineer:
         if 'OPP_DREB' in league_opp.columns:
             league_avg_dreb_allowed = league_opp['OPP_DREB'].mean()
             
+        # Defensive 3-Point Attempt Rate (Scheme proxy for Drop vs Switch)
+        opp_def_3par = 0.40
+        if not opp_stats_def.empty and 'OPP_FG3A' in opp_stats_def.columns and 'OPP_FGA' in opp_stats_def.columns:
+            def_fga = opp_stats_def['OPP_FGA'].values[0]
+            if def_fga > 0:
+                opp_def_3par = opp_stats_def['OPP_FG3A'].values[0] / def_fga
+                
+        league_avg_def_3par = 0.40
+        if 'OPP_FG3A' in league_opp.columns and 'OPP_FGA' in league_opp.columns:
+            league_total_3pa = league_opp['OPP_FG3A'].sum()
+            league_total_fga = league_opp['OPP_FGA'].sum()
+            if league_total_fga > 0:
+                league_avg_def_3par = league_total_3pa / league_total_fga
+            
         league_avg_fg_pct = 0.47
         if 'FG_PCT' in league_base.columns:
             league_avg_fg_pct = league_base['FG_PCT'].mean()
@@ -231,18 +245,30 @@ class FeatureEngineer:
             'league_avg_pace': league_adv['PACE'].mean(),
             'league_avg_oreb_allowed': league_avg_oreb_allowed,
             'league_avg_dreb_allowed': league_avg_dreb_allowed,
-            'league_avg_fg_pct': league_avg_fg_pct
+            'league_avg_fg_pct': league_avg_fg_pct,
+            'opp_def_3par': opp_def_3par,
+            'league_avg_def_3par': league_avg_def_3par
         }
 
-    def get_dvp_multiplier(self, position, opp_allowed, league_avg):
+    def get_dvp_multiplier(self, position, opp_allowed, league_avg, opp_def_3par=None, league_avg_def_3par=None):
         """
-        Calculates Defense vs Position multiplier.
+        Calculates Defense vs Position multiplier adjusted by Defensive Scheme (Drop vs Switch via 3PAR proxy).
         """
         # Base factor: How many rebounds does opp allow vs avg?
         base_factor = opp_allowed / league_avg if league_avg > 0 else 1.0
         
-        # Position-specific weighting could go here (e.g. Centers impacted more)
-        # For now, we apply the team-level allowance factor directly
+        # Defensive Scheme Adjustment
+        if opp_def_3par and league_avg_def_3par:
+            scheme_ratio = opp_def_3par / league_avg_def_3par
+            # If scheme ratio is > 1.0 (High 3PAR allowed), they likely pack the paint (Drop).
+            # This means Centers get MORE rebounds (cleaning up the paint), Guards get FEWER (contesting 3s).
+            if 'C' in position or 'F' in position:
+                # Bigs feast against drop coverage
+                base_factor *= (1.0 + (scheme_ratio - 1.0) * 0.15)
+            elif 'G' in position:
+                # Guards are pulled away from the basket
+                base_factor *= (1.0 - (scheme_ratio - 1.0) * 0.15)
+                
         return base_factor
 
     def adjust_minutes_for_injuries(self, player_id, team_id, position, base_minutes):
@@ -312,12 +338,38 @@ class FeatureEngineer:
 
     def get_cannibalization_factor(self, team_id, opponent_abbrev, current_player_id, base_projection_func, current_proj_minutes):
         """
-        Calculates a SOFT cap if the team is projecting way more rebounds than available.
-        Uses a sqrt damping to avoid harsh penalties.
+        Calculates a SOFT cap based on the absolute mathematical ceiling of rebounds available in the game environment.
+        Derived from Pace and expected field goal misses.
         """
-        # We skip complex summing and use a simple heuristic if needed.
-        # Returning 1.0 for now.
-        return 1.0
+        opp_id = self.loader.get_team_id(opponent_abbrev)
+        env = self.get_matchup_context(team_id, opp_id)
+        if not env:
+            return 1.0
+            
+        game_pace = (env['team_pace'] + env['opp_pace']) / 2.0
+        
+        # Rough heuristic: FGA is typically ~88% of Pace (accounting for TOV and FTA)
+        team_fga_proj = game_pace * 0.88
+        opp_fga_proj = game_pace * 0.88
+        
+        # Calculate expected misses
+        team_misses = team_fga_proj * (1.0 - env['team_fg_pct'])
+        opp_misses = opp_fga_proj * (1.0 - env['opp_fg_pct'])
+        
+        # Approximate rebounds available to the team: (Opp Misses * 72% DREB) + (Own Misses * 28% OREB)
+        expected_team_rebs = (opp_misses * 0.72) + (team_misses * 0.28)
+        
+        # League average team rebounds is ~43.5. 
+        # If the environment dictates far fewer available rebounds mathematically, we cap.
+        cap_ratio = expected_team_rebs / 43.5
+        
+        import math
+        if cap_ratio > 1.0:
+            # Soft boost for very high opportunity games
+            return 1.0 + (math.sqrt(cap_ratio) - 1.0) * 0.5
+        else:
+            # Harder penalty for slow, high-efficiency games where rebounds mathematically don't exist
+            return (cap_ratio + 1.0) / 2.0
 
     def compute_projection(self, player_id, opponent_abbrev, spread=0, manual_minutes=None, home_game=True, days_rest=1, opp_days_rest=1, matchup_factor=1.0):
         """
@@ -426,9 +478,12 @@ class FeatureEngineer:
         opportunity_factor = (dreb_miss_factor * dreb_ratio) + (oreb_miss_factor * oreb_ratio)
         
         # 3. DvP (Defense vs Position)
-        # Using allowed vs avg
-        dvp_factor_dreb = self.get_dvp_multiplier(p_stats['position'], env['opp_dreb_allowed'], env['league_avg_dreb_allowed'])
-        dvp_factor_oreb = self.get_dvp_multiplier(p_stats['position'], env['opp_oreb_allowed'], env['league_avg_oreb_allowed'])
+        # Using allowed vs avg + Defensive Scheme adjustment
+        opp_def_3par = env.get('opp_def_3par')
+        league_avg_def_3par = env.get('league_avg_def_3par')
+        
+        dvp_factor_dreb = self.get_dvp_multiplier(p_stats['position'], env['opp_dreb_allowed'], env['league_avg_dreb_allowed'], opp_def_3par, league_avg_def_3par)
+        dvp_factor_oreb = self.get_dvp_multiplier(p_stats['position'], env['opp_oreb_allowed'], env['league_avg_oreb_allowed'], opp_def_3par, league_avg_def_3par)
         dvp_factor = (dvp_factor_dreb * dreb_ratio) + (dvp_factor_oreb * oreb_ratio)
         
         # 4. Long Rebound (Opp 3PA)
@@ -461,17 +516,8 @@ class FeatureEngineer:
         final_env_mult = max(0.85, min(1.18, raw_global_mult))
         
         # --- Layer 3: Soft Team Cap (Cannibalization) ---
-        # Very simple heuristic: If projected > 18 (star C), make it harder to go higher
-        # Or relative to team total.
-        
-        team_cap_factor = 1.0
-        # If the environment is boosting a Star > 20% and he's already high volume
-        if base_rebs > 12 and final_env_mult > 1.10:
-             # Dampen the boost
-             excess = final_env_mult - 1.10
-             final_env_mult = 1.10 + (excess * 0.5)
-             
-        # No more hard cannibalization recursion.
+        cannibalize_mult = self.get_cannibalization_factor(p_stats['team_id'], opponent_abbrev, player_id, None, proj_minutes)
+        final_env_mult = final_env_mult * cannibalize_mult
         
         final_projection = base_rebs * final_env_mult
 
