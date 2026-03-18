@@ -354,6 +354,8 @@ def cheat_sheet():
                         else:
                             tier = 'AVOID'
 
+                        edge = confidence - 0.535
+
                     rest_note = f"{'Home' if is_home else 'Away'}"
                     if team_rest == 0:
                         rest_note += " B2B"
@@ -370,6 +372,7 @@ def cheat_sheet():
                         'context': proj_data.get('matchup_context', ''),
                         'components': proj_data.get('components', {}),
                         'trend': proj_data.get('trend_data', []),
+                        'edge_raw': edge if 'edge' in locals() else 0,
                     }
                     if confidence is not None:
                         entry['confidence'] = round(confidence * 100, 1)

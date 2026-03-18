@@ -24,17 +24,17 @@ USER_AGENTS = [
 # Base headers
 def get_random_headers():
     return {
-        'Host': 'stats.nba.com',
         'User-Agent': random.choice(USER_AGENTS),
+        'Referer': 'https://www.nba.com/',
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
         'x-nba-stats-origin': 'stats',
         'x-nba-stats-token': 'true',
+        'Origin': 'https://www.nba.com',
+        'Accept-Language': 'en-US,en;q=0.9',
         'Connection': 'keep-alive',
-        'Referer': 'https://stats.nba.com/',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
     }
 
 class NBADataLoader:
@@ -578,8 +578,7 @@ class NBADataLoader:
                 try:
                     board = scoreboardv2.ScoreboardV2(
                         game_date=date_str,
-                        timeout=15,
-                        headers=get_random_headers()
+                        timeout=15
                     )
                     
                     games_dict = board.game_header.get_dict()
