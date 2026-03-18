@@ -59,9 +59,8 @@ export function SplineSceneBasic() {
             <br/> Predict the Edge.
           </h1>
           <p className="mt-6 text-neutral-300 max-w-lg text-lg leading-relaxed">
-            The mathematical model for NBA Rebound Parlays. We crunch 
-            defensive schemes, cannibalization limits, and teammate correlation 
-            matrices to find the absolute best bets on the board.
+            Player rebound projections powered by matchup scouting, pace 
+            modeling, Monte Carlo simulation, and live odds integration.
           </p>
           <div className="mt-8">
              <button 

@@ -204,5 +204,199 @@ def predict():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/games')
+def get_games():
+    """Return the list of NBA games for a given date."""
+    from nba_api.stats.static import teams as nba_teams_static
+    try:
+        date_str = request.args.get('date')
+        if not date_str:
+            from datetime import date
+            date_str = date.today().isoformat()
+
+        raw_games = loader.get_games_for_date(date_str)
+        if not raw_games:
+            return jsonify({'games': [], 'message': f'No games found for {date_str}.'})
+
+        # Map team IDs to abbreviations
+        all_teams = {t['id']: t['abbreviation'] for t in nba_teams_static.get_teams()}
+
+        games = []
+        for g in raw_games:
+            home_abbr = all_teams.get(g['home_id'], '???')
+            away_abbr = all_teams.get(g['away_id'], '???')
+            games.append({'home': home_abbr, 'away': away_abbr})
+
+        return jsonify({'games': games})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'games': [], 'message': str(e)}), 500
+
+
+@app.route('/cheat-sheet')
+def cheat_sheet():
+    """
+    Generate projections for every rostered player in a game.
+    Query params: team (home team abbrev), date, book (sportsbook key).
+    """
+    try:
+        home_abbr = request.args.get('team', '').upper()
+        date_str = request.args.get('date')
+        book = request.args.get('book', 'fanduel')
+
+        if not home_abbr:
+            return jsonify({'error': 'Missing team parameter'}), 400
+
+        # Find the game for the given date involving this team
+        raw_games = loader.get_games_for_date(date_str) if date_str else []
+
+        from nba_api.stats.static import teams as nba_teams_static
+        all_teams = {t['id']: t['abbreviation'] for t in nba_teams_static.get_teams()}
+        abbr_to_id = {v: k for k, v in all_teams.items()}
+
+        home_id = abbr_to_id.get(home_abbr)
+        if not home_id:
+            return jsonify({'error': f'Unknown team: {home_abbr}'}), 404
+
+        # Find away team from the schedule
+        away_abbr = None
+        for g in raw_games:
+            if g['home_id'] == home_id:
+                away_abbr = all_teams.get(g['away_id'], '???')
+                break
+            elif g['away_id'] == home_id:
+                # The queried team is actually away; swap perspective
+                away_abbr = all_teams.get(g['home_id'], '???')
+                break
+
+        if not away_abbr:
+            return jsonify({'error': f'No game found for {home_abbr} on {date_str}'}), 404
+
+        away_id = abbr_to_id.get(away_abbr)
+
+        # Fetch odds (optional – won't fail if API key missing)
+        odds_key = os.environ.get('ODDS_API_KEY', '')
+        player_odds = {}
+        if odds_key:
+            try:
+                player_odds = loader.get_odds_for_game(odds_key, home_abbr, away_abbr, date_str, bookmaker=book)
+            except Exception:
+                traceback.print_exc()
+
+        # Rest days
+        home_rest = loader.get_days_rest(home_id)
+        away_rest = loader.get_days_rest(away_id) if away_id else 1
+
+        # Helper to build projections for one team's roster
+        def project_team(team_id, team_abbr, opp_abbr, is_home, team_rest, opp_rest):
+            from src.data_loader import normalize_name
+            roster = loader.get_team_roster(team_id)
+            if roster.empty:
+                return []
+
+            results = []
+            for _, row in roster.iterrows():
+                pid = row['PLAYER_ID']
+                pname = row['PLAYER']
+                try:
+                    proj_data = engineer.compute_composite_projection(
+                        pid, opp_abbr, spread=0,
+                        home_game=is_home,
+                        days_rest=team_rest,
+                        opp_days_rest=opp_rest
+                    )
+                    if not proj_data or 'error' in proj_data:
+                        continue
+
+                    mean_proj = proj_data['projection']
+
+                    # Match odds by normalized name
+                    norm_name = normalize_name(pname)
+                    odds_entry = player_odds.get(norm_name, {})
+                    line = odds_entry.get('line')
+                    odds_val = odds_entry.get('odds')
+
+                    # Compute direction/tier if line exists
+                    direction = '-'
+                    tier = '-'
+                    over_prob = None
+                    under_prob = None
+                    confidence = None
+
+                    if line is not None:
+                        player_var = proj_data.get('player_variance')
+                        sim_res = simulator.simulate(proj_data, market_line=line, player_variance=player_var)
+                        probs = simulator.get_probabilities(sim_res, line)
+
+                        over_prob = probs['over_probability']
+                        under_prob = probs['under_probability']
+                        confidence = max(over_prob, under_prob)
+                        direction = 'OVER' if over_prob > under_prob else 'UNDER'
+
+                        # Tier logic (mirrors /predict)
+                        trend_data = proj_data.get('trend_data', [])
+                        hit_count = sum(1 for g in trend_data if (direction == 'OVER' and g['rebounds'] > line) or (direction == 'UNDER' and g['rebounds'] < line))
+                        hit_rate = hit_count / len(trend_data) if trend_data else 0
+
+                        floor_val = probs['ci_68'][0]
+
+                        if confidence > 0.635:
+                            tier = 'STRONG PLAY'
+                        elif confidence > 0.585:
+                            tier = 'PLAY'
+                        elif direction == 'OVER' and line < floor_val:
+                            tier = 'SAFE PLAY'
+                        elif hit_rate >= 0.70:
+                            tier = 'TREND LEAN'
+                        elif confidence > 0.555:
+                            tier = 'LEAN'
+                        else:
+                            tier = 'AVOID'
+
+                    rest_note = f"{'Home' if is_home else 'Away'}"
+                    if team_rest == 0:
+                        rest_note += " B2B"
+
+                    entry = {
+                        'player': pname,
+                        'team': team_abbr,
+                        'opponent': opp_abbr,
+                        'projection': round(mean_proj, 1),
+                        'line': line if line is not None else '-',
+                        'direction': direction,
+                        'tier': tier,
+                        'rest_note': rest_note,
+                        'context': proj_data.get('matchup_context', ''),
+                        'components': proj_data.get('components', {}),
+                        'trend': proj_data.get('trend_data', []),
+                    }
+                    if confidence is not None:
+                        entry['confidence'] = round(confidence * 100, 1)
+                    if over_prob is not None:
+                        entry['over_prob'] = round(over_prob * 100, 1)
+                        entry['under_prob'] = round(under_prob * 100, 1)
+
+                    results.append(entry)
+
+                except Exception as player_err:
+                    print(f"DEBUG: Skipping {pname}: {player_err}", flush=True)
+                    continue
+
+            # Sort by projection descending
+            results.sort(key=lambda x: x['projection'], reverse=True)
+            return results
+
+        # Project both teams
+        home_results = project_team(home_id, home_abbr, away_abbr, True, home_rest, away_rest)
+        away_results = project_team(away_id, away_abbr, home_abbr, False, away_rest, home_rest)
+
+        return jsonify(home_results + away_results)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

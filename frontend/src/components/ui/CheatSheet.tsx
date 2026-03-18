@@ -222,7 +222,7 @@ export function CheatSheet() {
         {loading ? (
           <div className="w-full h-64 flex flex-col items-center justify-center text-zinc-400">
             <Loader2 className="h-8 w-8 animate-spin mb-4 text-emerald-500" />
-            <p>Crunching Scheme Matchups & Cannibalization Engines...</p>
+            <p>Pulling live data, modeling pace & DvP, and simulating outcomes...</p>
             <p className="text-xs text-zinc-600 mt-2">This may take 30-60 seconds on first load.</p>
           </div>
         ) : error ? (

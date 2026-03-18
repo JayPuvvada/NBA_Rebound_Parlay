@@ -3,7 +3,7 @@
 set -o errexit
 
 # 1. Install Python dependencies
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
 # 2. Build the React Frontend
 cd frontend
