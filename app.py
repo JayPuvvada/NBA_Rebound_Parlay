@@ -1,6 +1,5 @@
 import sys
-import pandas as pd
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
 from src.data_loader import NBADataLoader
 from src.features import FeatureEngineer
 from src.model import ReboundSimulator
