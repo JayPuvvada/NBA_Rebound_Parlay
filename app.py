@@ -161,10 +161,18 @@ def predict():
                 tier = "LEAN"
                 rec_color = "yellow"
             
-            # 6. AVOID (Explicit check logic, though 'else' covers it)
-            # Default is AVOID.
-            
-            edge = confidence - 0.535 # Breakeven
+            # Helper to calculate Implied Probability from Odds
+            def get_implied_prob(am_odds):
+                """Calculates the breakeven implied probability of American Odds."""
+                if am_odds < 0:
+                    return abs(am_odds) / (abs(am_odds) + 100.0)
+                else:
+                    return 100.0 / (am_odds + 100.0)
+
+            # Calculate edge (Model Confidence - Vegas Implied Probability)
+            ev_odds = float(odds) if odds else -110.0
+            implied_prob = get_implied_prob(ev_odds)
+            edge = confidence - implied_prob
             
             response['analysis'] = {
                 'line': line,
@@ -352,8 +360,15 @@ def cheat_sheet():
                             tier = 'LEAN'
                         else:
                             tier = 'AVOID'
-
-                        edge = confidence - 0.535
+                            
+                        # Calculate Implied Probability and Statistical Edge
+                        am_odds = float(odds_val) if odds_val else -110.0
+                        if am_odds < 0:
+                            implied_prob = abs(am_odds) / (abs(am_odds) + 100.0)
+                        else:
+                            implied_prob = 100.0 / (am_odds + 100.0)
+                        
+                        edge = confidence - implied_prob
 
                     rest_note = f"{'Home' if is_home else 'Away'}"
                     if team_rest == 0:
@@ -373,6 +388,11 @@ def cheat_sheet():
                         'trend': proj_data.get('trend_data', []),
                         'edge_raw': edge if 'edge' in locals() else 0,
                     }
+                    
+                    # Add detailed summary
+                    proj_data['player'] = pname
+                    proj_data['projection'] = mean_proj
+                    entry['summary'] = engineer.generate_pick_summary(proj_data, line)
                     if confidence is not None:
                         entry['confidence'] = round(confidence * 100, 1)
                     if over_prob is not None:

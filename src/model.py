@@ -42,12 +42,10 @@ class ReboundSimulator:
         if model_mean is None:
             raise ValueError("Projection data missing 'projection' or 'mean_projection' key")
 
-        # --- A. Market Anchoring (Posterior Mean) ---
-        if market_line:
-            w_model = 0.60
-            final_mean = (model_mean * w_model) + (market_line * (1 - w_model))
-        else:
-            final_mean = model_mean
+        # --- A. Market Anchoring Removed ---
+        # We no longer anchor to the market line. Doing so artificially shrinks the edge
+        # before we even calculate it. We want the pure model projection.
+        final_mean = model_mean
 
         # --- B. Variance Calculation (Empirical + Heuristic Blend) ---
         
@@ -70,10 +68,11 @@ class ReboundSimulator:
             reb_mean = player_variance['reb_mean']
             if reb_mean > 0:
                 empirical_fano = reb_var / reb_mean
-                # Sanity clamp: empirical fano between 0.8 and 3.0
-                empirical_fano = max(0.8, min(3.0, empirical_fano))
-                # Blend: 70% empirical, 30% heuristic (trust real data more)
-                fano_factor = (empirical_fano * 0.70) + (heuristic_fano * 0.30)
+                # Rebounding is highly player dependent. Some are highly volatile (Fano > 2), some are consistent (Fano ~ 1)
+                empirical_fano = max(0.8, min(3.5, empirical_fano))
+                
+                # We want to heavily trust empirical data if we have it. 90% Empirical / 10% Heuristic
+                fano_factor = (empirical_fano * 0.90) + (heuristic_fano * 0.10)
                 fano_source = "empirical"
             else:
                 fano_factor = heuristic_fano
