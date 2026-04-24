@@ -10,6 +10,7 @@ export function PredictForm() {
   const [line, setLine] = useState("");
   const [odds, setOdds] = useState("");
   const [matchup, setMatchup] = useState("");
+  const [venue, setVenue] = useState<"auto" | "home" | "away">("auto");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any | null>(null);
@@ -31,6 +32,7 @@ export function PredictForm() {
           line: line || null,
           odds: odds || null,
           matchup: matchup || null,
+          home_game: venue === "auto" ? null : venue === "home",
         }),
       });
 
@@ -131,6 +133,27 @@ export function PredictForm() {
                 placeholder="e.g. Al Horford"
                 className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-zinc-600"
               />
+            </div>
+
+            {/* Venue */}
+            <div>
+              <label className="block text-xs text-zinc-500 mb-1 uppercase tracking-wider">Venue</label>
+              <div className="flex gap-1 bg-zinc-900 border border-zinc-700 p-1 rounded-md">
+                {(["auto", "home", "away"] as const).map((v) => (
+                  <button
+                    type="button"
+                    key={v}
+                    onClick={() => setVenue(v)}
+                    className={`flex-1 px-3 py-1.5 rounded text-xs font-semibold capitalize transition-colors ${
+                      venue === v
+                        ? "bg-emerald-600 text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {v === "auto" ? "Auto (from schedule)" : v}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Submit */}

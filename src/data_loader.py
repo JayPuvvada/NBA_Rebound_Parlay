@@ -1,15 +1,11 @@
 import pandas as pd
 from nba_api.stats.endpoints import playergamelog, teamgamelog, leaguedashteamstats, commonplayerinfo, boxscoretraditionalv2, shotchartdetail, cumestatsteam, leaguedashplayerstats
 import time
-
-def normalize_name(name):
-    try:
-        from unidecode import unidecode
-    except ImportError:
-        def unidecode(s): return s
-    return unidecode(name).lower().replace('.', '').strip()
-
 import random
+
+from src.utils import normalize_name, get_logger
+
+log = get_logger('data_loader')
 
 # A robust list of valid User-Agents to rotate
 USER_AGENTS = [
@@ -61,7 +57,7 @@ class NBADataLoader:
             
             # If the cache is too old, we let the live API take over or trigger a background refresh
             if hours_old > 12:
-                print("DEBUG: Offline cache is stale (>12 hours). Will rely on live API.")
+                log.info("Offline cache is stale (>12 hours). Will rely on live API.")
                 return
                 
             with open(cache_file, 'r') as f:
@@ -70,7 +66,7 @@ class NBADataLoader:
             if data['season'] != self.season:
                 return
 
-            print("DEBUG: Loaded offline cache successfully!", flush=True)
+            log.info("Loaded offline cache successfully.")
             cache = data['data']
             
             # Map the JSON arrays back to Pandas DataFrames in our memory cache
@@ -90,7 +86,7 @@ class NBADataLoader:
                     self._cache[f"roster_{team_id}_{self.season}"] = pd.DataFrame(roster_data)
 
         except Exception as e:
-            print(f"DEBUG: Failed to load offline cache: {e}", flush=True)
+            log.debug(f"Failed to load offline cache: {e}")
 
     def _get_from_cache(self, key):
         return self._cache.get(key)
@@ -112,34 +108,27 @@ class NBADataLoader:
                 
                 return api_func(**kwargs, headers=headers, timeout=30)
             except Exception as e:
-                print(f"DEBUG: API attempt {attempt+1}/{max_retries} for {func_name} failed: {e}", flush=True)
+                log.debug(f"API attempt {attempt+1}/{max_retries} for {func_name} failed: {e}")
                 if attempt == max_retries - 1:
                     raise
 
     def get_player_id(self, player_name):
         from nba_api.stats.static import players
-        try:
-            from unidecode import unidecode
-        except ImportError:
-            # simple fallback if unidecode fails or not installed?
-            def unidecode(s): return s
-            
+
         nba_players = players.get_players()
-        normalized_query = unidecode(player_name).lower()
+        normalized_query = normalize_name(player_name)
 
         for player in nba_players:
-            normalized_player = unidecode(player['full_name']).lower()
-            if normalized_player == normalized_query:
+            if normalize_name(player['full_name']) == normalized_query:
                 return player['id']
-        
-        # Fallback: Check if name is in full_name
-        for player in nba_players:
-             normalized_player = unidecode(player['full_name']).lower()
-             if normalized_query in normalized_player:
-                 print(f"Partial match found: {player['full_name']} for {player_name}")
-                 return player['id']
 
-        print(f"Player {player_name} not found in static list.")
+        # Fallback: substring match
+        for player in nba_players:
+            if normalized_query in normalize_name(player['full_name']):
+                log.info(f"Partial match found: {player['full_name']} for {player_name}")
+                return player['id']
+
+        log.warning(f"Player {player_name} not found in static list.")
         return None
 
     def get_team_id(self, team_abbreviation):
@@ -151,30 +140,79 @@ class NBADataLoader:
         return None
 
     def get_player_gamelog(self, player_id):
-        """Fetches game log for a specific player."""
-        key = f"player_log_{player_id}_{self.season}"
+        """Fetches game log for a specific player (Regular Season + Playoffs)."""
+        key = f"player_log_{player_id}_{self.season}_combined"
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
-        
-        log = self._retry_api_call(
-            playergamelog.PlayerGameLog,
-            player_id=player_id, season=self.season
-        )
-        df = log.get_data_frames()[0]
+
+        dfs = []
+        try:
+            reg_log = self._retry_api_call(
+                playergamelog.PlayerGameLog,
+                player_id=player_id, season=self.season, season_type_all_star='Regular Season'
+            ).get_data_frames()[0]
+            if not reg_log.empty:
+                dfs.append(reg_log)
+        except Exception as e:
+            log.warning(f"Failed to fetch regular season logs for player {player_id}: {e}")
+
+        try:
+            play_log = self._retry_api_call(
+                playergamelog.PlayerGameLog,
+                player_id=player_id, season=self.season, season_type_all_star='Playoffs'
+            ).get_data_frames()[0]
+            if not play_log.empty:
+                dfs.append(play_log)
+        except Exception as e:
+            log.warning(f"Failed to fetch playoff logs for player {player_id}: {e}")
+
+        if dfs:
+            df = pd.concat(dfs, ignore_index=True)
+            if 'GAME_DATE' in df.columns:
+                # nba_api gamelogs typically use 'MMM DD, YYYY' format
+                df['GAME_DATE_DT'] = pd.to_datetime(df['GAME_DATE'])
+                df = df.sort_values(by='GAME_DATE_DT', ascending=False).drop(columns=['GAME_DATE_DT']).reset_index(drop=True)
+        else:
+            df = pd.DataFrame()
+
         self._set_cache(key, df)
         return df
 
     def get_team_gamelog(self, team_id):
-        """Fetches game log for a specific team."""
-        key = f"team_log_{team_id}_{self.season}"
+        """Fetches game log for a specific team (Regular Season + Playoffs)."""
+        key = f"team_log_{team_id}_{self.season}_combined"
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
 
-        log = self._retry_api_call(
-            teamgamelog.TeamGameLog,
-            team_id=team_id, season=self.season
-        )
-        df = log.get_data_frames()[0]
+        dfs = []
+        try:
+            reg_log = self._retry_api_call(
+                teamgamelog.TeamGameLog,
+                team_id=team_id, season=self.season, season_type_all_star='Regular Season'
+            ).get_data_frames()[0]
+            if not reg_log.empty:
+                dfs.append(reg_log)
+        except Exception as e:
+            log.warning(f"Failed to fetch regular season logs for team {team_id}: {e}")
+
+        try:
+            play_log = self._retry_api_call(
+                teamgamelog.TeamGameLog,
+                team_id=team_id, season=self.season, season_type_all_star='Playoffs'
+            ).get_data_frames()[0]
+            if not play_log.empty:
+                dfs.append(play_log)
+        except Exception as e:
+            log.warning(f"Failed to fetch playoff logs for team {team_id}: {e}")
+
+        if dfs:
+            df = pd.concat(dfs, ignore_index=True)
+            if 'GAME_DATE' in df.columns:
+                df['GAME_DATE_DT'] = pd.to_datetime(df['GAME_DATE'])
+                df = df.sort_values(by='GAME_DATE_DT', ascending=False).drop(columns=['GAME_DATE_DT']).reset_index(drop=True)
+        else:
+            df = pd.DataFrame()
+
         self._set_cache(key, df)
         return df
 
@@ -220,7 +258,7 @@ class NBADataLoader:
                 season=self.season, measure_type_detailed_defense='Opponent'
             )
         except Exception as e:
-            print(f"Error fetching opponent stats: {e}")
+            log.warning(f"Error fetching opponent stats: {e}")
             stats = self._retry_api_call(
                 leaguedashteamstats.LeagueDashTeamStats,
                 season=self.season
@@ -245,7 +283,7 @@ class NBADataLoader:
         return df
 
     def get_common_player_info(self, player_id):
-        print(f"DEBUG: Getting info for player {player_id}", flush=True)
+        log.debug(f"Getting info for player {player_id}")
         key = f"common_info_{player_id}"
         if self._get_from_cache(key) is not None:
             return self._get_from_cache(key)
@@ -327,79 +365,121 @@ class NBADataLoader:
                 df = stats.get_data_frames()[0]
                 self._set_cache(league_key, df)
             except Exception as e:
-                print(f"DEBUG: Failed to fetch rebounding tracking stats: {e}", flush=True)
+                log.debug(f"Failed to fetch rebounding tracking stats: {e}")
                 import pandas as pd
                 return pd.DataFrame()
             
         player_row = df[df['PLAYER_ID'] == player_id]
         return player_row
 
+    INJURY_DISK_CACHE = 'data/injury_report.json'
+    INJURY_CACHE_TTL_SEC = 20 * 60  # 20 minutes
+    INJURY_MIN_SANITY_COUNT = 10    # fewer than this → scrape likely broken
+
     def get_injury_report(self):
         """
         Fetches the current NBA injury report from CBS Sports and ESPN.
+        Uses an in-memory cache + 20-min on-disk JSON cache to avoid hammering scrapers.
+        Applies a sanity threshold: if the merged scrape returns suspiciously few rows,
+        the in-memory cache is populated but the prior disk cache is *not* overwritten,
+        so stale-but-real data survives a layout change.
         """
         key = "live_injury_report"
-        if self._get_from_cache(key):
-            return self._get_from_cache(key)
-            
+        cached = self._get_from_cache(key)
+        if cached is not None:
+            return cached
+
+        import json
+        import os
+
+        # 1. Try disk cache first.
+        disk_injuries = None
+        if os.path.exists(self.INJURY_DISK_CACHE):
+            try:
+                age_sec = time.time() - os.path.getmtime(self.INJURY_DISK_CACHE)
+                with open(self.INJURY_DISK_CACHE, 'r') as f:
+                    disk_injuries = json.load(f)
+                if age_sec < self.INJURY_CACHE_TTL_SEC and disk_injuries:
+                    self._set_cache(key, disk_injuries)
+                    return disk_injuries
+            except Exception as e:
+                log.warning(f"Injury disk cache read failed: {e}")
+
         import requests
         from bs4 import BeautifulSoup
-        
+
         injuries = {}
 
         # --- CBS SPORTS ---
-        print("DEBUG: Fetching CBS Injuries...", flush=True)
+        log.debug("Fetching CBS Injuries...")
         try:
             url = "https://www.cbssports.com/nba/injuries/"
             headers = {'User-Agent': 'Mozilla/5.0'}
             resp = requests.get(url, headers=headers, timeout=10)
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
+
             rows = soup.find_all('tr')
-            print(f"DEBUG: CBS Rows found: {len(rows)}", flush=True)
+            log.debug(f"CBS Rows found: {len(rows)}")
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 5:
                     long_name = row.find('span', class_='CellPlayerName--long')
-                    if long_name:
-                        name = long_name.get_text(strip=True)
-                    else:
-                        name = cols[0].get_text(strip=True)
-                        
+                    name = long_name.get_text(strip=True) if long_name else cols[0].get_text(strip=True)
                     status = cols[4].get_text(strip=True)
                     injuries[normalize_name(name)] = status
         except Exception as e:
-            print(f"Warning: Could not fetch from CBS: {e}", flush=True)
+            log.warning(f"Could not fetch from CBS: {e}")
 
         # --- ESPN ---
-        print("DEBUG: Fetching ESPN Injuries...", flush=True)
+        log.debug("Fetching ESPN Injuries...")
         try:
             url = "https://www.espn.com/nba/injuries"
             headers = {'User-Agent': 'Mozilla/5.0'}
             resp = requests.get(url, headers=headers, timeout=10)
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            rows = soup.find_all('tr', class_='Table__TR') # Note: ESPN classes change often
+
+            rows = soup.find_all('tr', class_='Table__TR')
             if len(rows) == 0:
-                 # Fallback for Table structure changes
-                 rows = soup.find_all('tr')
-            
-            print(f"DEBUG: ESPN Rows found: {len(rows)}", flush=True)
-            
+                rows = soup.find_all('tr')
+            log.debug(f"ESPN Rows found: {len(rows)}")
+
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 4:
                     name_link = cols[0].find('a')
                     name = name_link.get_text(strip=True) if name_link else cols[0].get_text(strip=True)
                     status = cols[3].get_text(strip=True)
-                    # Use a normalized key, but preserve status accuracy
                     norm_name = normalize_name(name)
                     if norm_name not in injuries or injuries[norm_name] == 'Active':
                         injuries[norm_name] = status
         except Exception as e:
-            print(f"Warning: Could not fetch from ESPN: {e}", flush=True)
-            
-        print(f"DEBUG: Total Injuries Found: {len(injuries)}", flush=True)
+            log.warning(f"Could not fetch from ESPN: {e}")
+
+        log.info(f"Total injuries found: {len(injuries)}")
+
+        # Sanity check: if too few results, the scrape is likely broken.
+        # Prefer a stale-but-real disk cache over poisoned empty data.
+        if len(injuries) < self.INJURY_MIN_SANITY_COUNT:
+            log.warning(
+                f"Injury scrape returned only {len(injuries)} entries "
+                f"(threshold {self.INJURY_MIN_SANITY_COUNT}). Layout may have changed."
+            )
+            if disk_injuries:
+                log.warning("Falling back to stale disk cache.")
+                self._set_cache(key, disk_injuries)
+                return disk_injuries
+            # No disk fallback: return what we have, but don't clobber the disk cache.
+            self._set_cache(key, injuries)
+            return injuries
+
+        # Healthy scrape: write disk cache.
+        try:
+            os.makedirs(os.path.dirname(self.INJURY_DISK_CACHE), exist_ok=True)
+            with open(self.INJURY_DISK_CACHE, 'w') as f:
+                json.dump(injuries, f)
+        except Exception as e:
+            log.warning(f"Injury disk cache write failed: {e}")
+
         self._set_cache(key, injuries)
         return injuries
 
@@ -515,45 +595,34 @@ class NBADataLoader:
             'injury_note': likely_starter['injury_status']
         }
 
+    DEFAULT_DAYS_REST = 2  # Neutral assumption when unknown; keeps rest_mult at 1.0
+
     def get_days_rest(self, team_id):
         """
-        Calculates days since the last game for a team.
-        Returns 0 if played yesterday (B2B), 1 if played 2 days ago, etc.
-        For simplicity/robustness, we check the date of the last game in the gamelog.
+        Days since the last game for a team.
+        0 = played yesterday (B2B), 1 = played 2 days ago, etc.
+        Uses DEFAULT_DAYS_REST (2 = neutral) whenever we can't compute a real value,
+        so empty-log and parse-failure paths agree.
         """
         logs = self.get_team_gamelog(team_id)
         if logs.empty:
-            return 3 # Default to rested if no logs
+            return self.DEFAULT_DAYS_REST
 
-        # Get last game date
-        last_game_date_str = logs.iloc[0]['GAME_DATE'] # Format: "JAN 20, 2026" or "2026-01-20"
-        
+        last_game_date_str = logs.iloc[0]['GAME_DATE']
         try:
             from datetime import datetime
-            # nba_api often uses "JAN 20, 2026"
             try:
                 last_date = datetime.strptime(last_game_date_str, "%b %d, %Y")
             except ValueError:
-                # Try ISO format
                 last_date = datetime.strptime(last_game_date_str, "%Y-%m-%d")
-                
-            # Compare to "Today" (simulated or real)
-            # For this app, we assume "Run Time" is "Today"
-            today = datetime.now()
-            
-            delta = today - last_date
-            days_diff = delta.days
-            
-            # days_diff = 1 means they played yesterday (Today is 21st, Game was 20th) -> 0 Days Rest
-            # days_diff = 2 means they played day before yesterday -> 1 Day Rest
-            
+
+            days_diff = (datetime.now() - last_date).days
             rest = max(0, days_diff - 1)
-            print(f"DEBUG: Team {team_id} Last Game: {last_game_date_str} -> {days_diff} days ago -> {rest} days rest")
+            log.debug(f"Team {team_id} last game: {last_game_date_str} -> {days_diff} days ago -> {rest} rest")
             return rest
-            
         except Exception as e:
-            print(f"Error calculating rest: {e}")
-            return 1 # Default
+            log.warning(f"Error calculating rest for team {team_id}: {e}")
+            return self.DEFAULT_DAYS_REST
 
     def get_games_for_date(self, date_str):
         """
@@ -571,7 +640,7 @@ class NBADataLoader:
             games = []
             seen_game_ids = set()
             
-            print(f"DEBUG: Fetching games for {date_str} via ScoreboardV2...", flush=True)
+            log.debug(f"Fetching games for {date_str} via ScoreboardV2...")
             
             # Use retry logic to handle rate-limiting
             for attempt in range(3):
@@ -606,11 +675,11 @@ class NBADataLoader:
                             'away_id': vid
                         })
                     
-                    print(f"DEBUG: ScoreboardV2 found {len(games)} unique games for {date_str}.", flush=True)
+                    log.debug(f"ScoreboardV2 found {len(games)} unique games for {date_str}.")
                     break  # Success
                     
                 except Exception as retry_err:
-                    print(f"DEBUG: ScoreboardV2 attempt {attempt+1} failed: {retry_err}", flush=True)
+                    log.debug(f"ScoreboardV2 attempt {attempt+1} failed: {retry_err}")
                     if attempt < 2:
                         import time
                         time.sleep(2)
@@ -620,7 +689,7 @@ class NBADataLoader:
             return games
 
         except Exception as e:
-            print(f"Error fetching games for {date_str}: {e}")
+            log.warning(f"Error fetching games for {date_str}: {e}")
             return []
 
     def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel'):
@@ -637,14 +706,14 @@ class NBADataLoader:
         import requests
         
         try:
-            print(f"DEBUG: Deep-searching odds for {home_team_code} vs {away_team_code} on {bookmaker}...", flush=True)
+            log.debug(f"Deep-searching odds for {home_team_code} vs {away_team_code} on {bookmaker}...")
             
             # 1. Get Events
             # We filter by likely active events.
             events_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events?apiKey={api_key}&regions=us"
             resp = requests.get(events_url)
             if resp.status_code != 200:
-                print(f"Odds API Error (Events): {resp.text}")
+                log.warning(f"Odds API Error (Events): {resp.text}")
                 return {}
             
             events = resp.json()
@@ -678,11 +747,11 @@ class NBADataLoader:
                     break
             
             if not target_event_id:
-                print("DEBUG: No matching Odds Event found.")
+                log.debug("No matching Odds Event found.")
                 return {}
                 
             # 2. Get Props for ID - filtered by selected bookmaker
-            print(f"DEBUG: Found Event ID {target_event_id}. Fetching Props from {bookmaker}...", flush=True)
+            log.debug(f"Found Event ID {target_event_id}. Fetching Props from {bookmaker}...")
             props_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{target_event_id}/odds?apiKey={api_key}&regions=us&bookmakers={bookmaker}&markets=player_rebounds&oddsFormat=american"
             
             p_resp = requests.get(props_url)
@@ -695,7 +764,7 @@ class NBADataLoader:
             
             # DEBUG: Log available bookmakers
             book_keys = [b.get('key', 'unknown') for b in bookmakers]
-            print(f"DEBUG: Available bookmakers: {book_keys}", flush=True)
+            log.debug(f"Available bookmakers: {book_keys}")
             
             for book in bookmakers:
                 for market in book.get('markets', []):
@@ -718,5 +787,5 @@ class NBADataLoader:
             return player_props
 
         except Exception as e:
-            print(f"Error fetching odds: {e}")
+            log.warning(f"Error fetching odds: {e}")
             return {}

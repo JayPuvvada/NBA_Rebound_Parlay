@@ -1,13 +1,20 @@
 import pandas as pd
 import numpy as np
 from src.data_loader import NBADataLoader
+from src.utils import normalize_name, get_logger
 
-def normalize_name(name):
+log = get_logger('features')
+
+
+def _parse_height_inches(height_str, default=72):
+    """Parse 'FT-IN' (e.g. '6-10') into inches. Returns `default` on malformed input."""
+    if not isinstance(height_str, str) or '-' not in height_str:
+        return default
     try:
-        from unidecode import unidecode
-    except ImportError:
-        def unidecode(s): return s
-    return unidecode(name).lower().replace('.', '').strip()
+        ft, inch = height_str.split('-')
+        return int(ft) * 12 + int(inch)
+    except (ValueError, AttributeError):
+        return default
 
 class FeatureEngineer:
     def __init__(self, data_loader):
@@ -26,30 +33,19 @@ class FeatureEngineer:
         Format: ["Player Name (Status)", ...]
         """
         roster = self.loader.get_team_roster(team_id)
-        if roster.empty: 
-            print(f"DEBUG: Roster empty for team {team_id}")
-            return [] 
-        
+        if roster.empty:
+            log.debug(f"Roster empty for team {team_id}")
+            return []
+
         injury_report = self.loader.get_injury_report()
-        print(f"DEBUG: Injury Report Size: {len(injury_report)}")
-        
+        log.debug(f"Injury report size: {len(injury_report)}")
+
         notes = []
-        
         for _, row in roster.iterrows():
             name = row['PLAYER']
-            norm_name = normalize_name(name)
-            
-            # Check injury status
-            status = injury_report.get(norm_name, 'Active')
-            
+            status = injury_report.get(normalize_name(name), 'Active')
             if status != 'Active':
-                 print(f"DEBUG: Found injury for {name}: {status}")
-                 notes.append(f"{name} ({status})")
-            else:
-                 # Debug potential mismatch
-                 # if "durant" in norm_name: print(f"DEBUG: Durant status is Active. Key used: {norm_name}")
-                 pass
-                 
+                notes.append(f"{name} ({status})")
         return notes
 
     def get_player_stats(self, player_id, opponent_abbrev=None):
@@ -70,7 +66,14 @@ class FeatureEngineer:
             return float(m)
 
         logs['MIN_FLOAT'] = logs['MIN'].apply(clean_minutes)
-        # Avoid divide by zero
+
+        # Track DNPs before filtering so the rate reflects real roster usage.
+        # A game with MIN < 5 is treated as a DNP-CD (did not play / conditional).
+        total_game_entries = len(logs)
+        dnp_count = int((logs['MIN_FLOAT'] < 5).sum())
+        dnp_rate = dnp_count / total_game_entries if total_game_entries > 0 else 0.0
+
+        # Avoid divide by zero on per-minute rates
         logs = logs[logs['MIN_FLOAT'] > 0].copy()
 
         # 2. Calculate Per-Minute Rates (The "Skill" Metric)
@@ -169,7 +172,7 @@ class FeatureEngineer:
             'reb_std': reb_std,
             'reb_mean': reb_mean,
             'games_played': len(logs),
-            # New: Minutes Trend
+            'dnp_rate': dnp_rate,
             'minutes_trend_slope': minutes_trend_slope
         }
 
@@ -382,26 +385,29 @@ class FeatureEngineer:
             if is_big:
                 roster = self.loader.get_team_roster(team_id)
                 injury_report = self.loader.get_injury_report()
-                
+
                 injured_bigs = 0
                 for _, row in roster.iterrows():
                     t_id = row['PLAYER_ID']
-                    if t_id == current_player_id: continue
-                    
-                    # Identify teammates who are bigs (competing for same rebounds)
-                    team_pos = row.get('POSITION', 'G')
-                    height = row.get('HEIGHT', '6-0')
-                    try:
-                        ft, inch = height.split('-')
-                        h_inches = int(ft)*12 + int(inch)
-                    except:
-                        h_inches = 72
-                        
-                    # If teammate is tall or a designated F/C
-                    if h_inches >= 80 or 'C' in team_pos or 'F' in team_pos:
+                    if t_id == current_player_id:
+                        continue
+
+                    # Primary signal: position. A player listed F/C is a big.
+                    # Height is a *tiebreaker* for players with ambiguous positions (e.g. 'G-F').
+                    team_pos = str(row.get('POSITION', '') or '')
+                    is_teammate_big = ('C' in team_pos) or ('F' in team_pos)
+
+                    if not is_teammate_big:
+                        # Only fall back to height for players with a listed position that
+                        # doesn't already mark them as a big. Default missing height to
+                        # something *short* so we don't falsely count guards.
+                        h_inches = _parse_height_inches(row.get('HEIGHT'), default=72)
+                        is_teammate_big = h_inches >= 80
+
+                    if is_teammate_big:
                         t_name = row['PLAYER']
-                        status = injury_report.get(normalize_name(t_name), 'Active')
-                        if 'out' in status.lower() or 'inactive' in status.lower():
+                        status = injury_report.get(normalize_name(t_name), 'Active').lower()
+                        if 'out' in status or 'inactive' in status:
                             injured_bigs += 1
                             
                 # Less cannibalization (boost) if teammates are out, penalty if everyone is healthy
@@ -443,13 +449,23 @@ class FeatureEngineer:
             trend_adjustment = max(-3.0, min(3.0, min_trend_slope * 2))
             base_minutes += trend_adjustment
         
+        # DNP-rate penalty: bench players who frequently sit inflate their per-minute
+        # skill rate while their per-game output is lower than it looks.
+        # Reduce projected minutes proportionally so base_rebs reflects real usage.
+        if not manual_minutes:
+            dnp_rate = p_stats.get('dnp_rate', 0.0)
+            if dnp_rate > 0.25:
+                # Scale penalty: 25% DNP rate → 0% cut; 75% DNP rate → 25% cut
+                penalty_frac = (dnp_rate - 0.25) * 0.5
+                base_minutes *= (1.0 - penalty_frac)
+
         # Injury Adjustment for Minutes
         injury_note = None
         if not manual_minutes:
             base_minutes, injury_note = self.adjust_minutes_for_injuries(player_id, p_stats['team_id'], p_stats['position'], base_minutes)
-        
+
         if base_minutes == 0:
-             return {'error': injury_note or 'Player is OUT'}
+            return {'error': injury_note or 'Player is OUT'}
 
         # Blowout Logic (Minutes Damping Only)
         abs_spread = abs(spread)
@@ -588,7 +604,8 @@ class FeatureEngineer:
                 'Opp': round(opportunity_factor, 2),
                 'DvP': round(dvp_factor, 2),
                 'Matchup': round(matchup_factor, 2),
-                'Blowout': blowout_risk_label
+                'Blowout': blowout_risk_label,
+                'DNP Rate': round(p_stats.get('dnp_rate', 0.0), 2),
             },
             'modifiers': {
                 'blowout_risk': blowout_risk_label,
@@ -753,74 +770,94 @@ class FeatureEngineer:
 
     def generate_pick_summary(self, proj_data, line=None):
         """
-        Generates a deeply analytical, dynamic narrative summary that explains the mathematical 'why'
-        behind the projection, avoiding generic templates.
+        Generates a deeply analytical, razor-sharp narrative that explicitly tells the user WHY
+        the model recommends a specific tier, what factors clashed, and what pushed it over the edge.
         """
-        player = proj_data['player']
-        proj = proj_data['projection']
+        player = proj_data.get('player', 'Unknown')
+        proj = proj_data.get('projection', 0.0)
         base_rebs = proj_data.get('components', {}).get('Base Rebs', 0)
         comps = proj_data.get('components', {})
         context = proj_data.get('matchup_context', 'Neutral')
         
+        tier = proj_data.get('tier', 'Unknown Tier')
+        direction = proj_data.get('direction', 'Unknown Direction')
+        confidence = proj_data.get('confidence', 0.0)
+        edge = proj_data.get('edge', 0.0)
+        
         paragraphs = []
         
-        # 1. The Core Projection & Book Line
-        base_mins = comps.get('Proj Minutes', 0)
-        p1 = f"The algorithmic engine projects **{player}** to grab **{proj} rebounds** in **{base_mins} minutes** of action."
-        if line:
-            diff = proj - line
-            if diff > 1.5:
-                p1 += f" This is substantially higher than the Vegas line of **{line}**, which is what generates our massive mathematical edge."
-            elif diff < -1.5:
-                p1 += f" This is substantially lower than the Vegas line of **{line}**, meaning the model strongly favors the Under."
-            else:
-                p1 += f" This is very close to the Vegas line of **{line}**, making this a tighter, more marginal play."
+        # 1. The Core Verdict & EV Math (Explicit Tier Justification)
+        p1 = f"**Recommendation: {tier} on the {direction}**."
+        
+        if tier == 'AVOID' or tier == '-':
+            p1 += f" Although the math shows a **{proj}** rebound projection against a line of **{line}**, the extreme volatility or lack of statistical edge makes this mathematically unsafe to bet."
+        else:
+            win_perc = int(confidence * 100) if confidence > 1 else int(confidence)
+            ev_perc = round(edge * 100, 1) if edge < 1 else round(edge, 1)
+            p1 += f" The algorithmic engine projects **{player}** to grab **{proj} rebounds**. Based on a {win_perc}% simulation win rate against the current sportsbook odds, this creates a strong **+{ev_perc}% Expected Value** edge."
         paragraphs.append(p1)
         
-        # 2. Injury & Opportunity Impact
-        injury = proj_data.get('team_injury')
-        if injury:
-            paragraphs.append(f"**🚑 Injury Impact:** With **{injury}**, {player}'s expected floor time and rebounding opportunity are heavily boosted. This sudden lack of teammate cannibalization is a primary driver of this high projection.")
-            
-        # 3. Trend & Streak Analysis
-        trend = proj_data.get('trend_data', [])
-        if len(trend) >= 4:
-            # We look at last 5 or fewer if not available
-            last_n = [g['rebounds'] for g in trend[:min(5, len(trend))]]
-            if len(last_n) > 0:
-                avg_last_n = sum(last_n) / len(last_n)
-                if avg_last_n >= proj + 1.5:
-                    paragraphs.append(f"**📈 Hot Streak:** He is averaging a massive **{avg_last_n:.1f} rebounds** over his recent games. The model's dynamic weighting system detects this positive trend break and is weighting his recent surge heavily over his stale season averages.")
-                elif avg_last_n <= proj - 1.5:
-                    paragraphs.append(f"**📉 Cold Streak:** He has slumped to just **{avg_last_n:.1f} rebounds** recently. The model is penalizing him appropriately for this negative trend break.")
-                
-        # 4. Environment & Matchup
-        env_factors = []
+        # 2. The Mathematical Tug-of-War (Environment weights)
+        boosts = []
+        penalties = []
+        
         dvp = comps.get('DvP', 1.0)
-        if dvp >= 1.06: env_factors.append(f"the opponent allows **{int((dvp-1)*100)}% more rebounds** than league average to his position")
-        elif dvp <= 0.94: env_factors.append(f"we face a stout rebounding defense that allows **{int((1-dvp)*100)}% fewer rebounds**")
+        if dvp >= 1.06: boosts.append(f"a poor opposing rebounding defense (+{int((dvp-1)*100)}% rebs allowed)")
+        elif dvp <= 0.94: penalties.append(f"a stout rebounding defense (-{int((1-dvp)*100)}% rebs allowed)")
+        
+        pace = comps.get('Pace', 1.0)
+        if pace >= 1.03: boosts.append("a fast game pace")
+        elif pace <= 0.97: penalties.append("a slow game environment")
         
         matchup_adj = comps.get('Matchup', 1.0)
-        if matchup_adj <= 0.96: env_factors.append(f"his specific matchup against **{context.split('(')[-1].replace(')', '')}** is physically testing (lower expected rebounding efficiency)")
-        elif matchup_adj >= 1.04: env_factors.append(f"he has a highly favorable matchup against **{context.split('(')[-1].replace(')', '')}** (soft box-outs expected)")
+        m_name = context.split('(')[-1].replace(')', '') if '(' in context else 'his direct matchup'
+        if matchup_adj <= 0.96: penalties.append(f"a physically tough individual matchup vs {m_name}")
+        elif matchup_adj >= 1.04: boosts.append(f"a highly favorable individual matchup vs {m_name}")
         
-        if env_factors:
-            paragraphs.append("**⚔️ Matchup Environment:** " + "; ".join(env_factors).capitalize() + ".")
+        if boosts and penalties:
+            p2 = f"**⚖️ The Tug-of-War:** The model had to weigh major negatives (like {penalties[0]}) against strong positives (like {boosts[0]}). Ultimately, the "
+            if proj > base_rebs:
+                p2 += "positive factors overpowered the limits, raising his expected ceiling beyond the baseline."
+            else:
+                p2 += "negative environment dragged down his baseline projection and capped his upside."
+            paragraphs.append(p2)
+        elif boosts:
+            paragraphs.append(f"**🚀 Highly Favorable Environment:** The playing environment is uniformly positive, driven primarily by {boosts[0]}.")
+        elif penalties:
+            paragraphs.append(f"**🧱 Hostile Environment:** The external environment is broadly hostile to rebounding, heavily weighted down by {penalties[0]}.")
+
+        # 3. The Deciding Factor
+        decisions = []
+        
+        # Injury Impact
+        injury = proj_data.get('team_injury')
+        if injury:
+            decisions.append((f"the injury to **{injury}**, which drastically removes teammate cannibalization and forcibly inflates his expected minutes/floor time.", 100))
             
-        # 5. Volatility (Empirical Variance)
+        # Volatility
         var_data = proj_data.get('player_variance', {})
         if var_data and var_data.get('reb_mean', 0) > 0:
             fano = var_data['reb_variance'] / var_data['reb_mean']
-            if fano > 2.2:
-                paragraphs.append("**⚠️ Volatility Warning:** This player is highly inconsistent (boom-or-bust rebounder). The Monte Carlo simulation generated a very wide distribution of outcomes, meaning this play carries higher inherent risk.")
-            elif fano < 1.3 and fano > 0.1:
-                paragraphs.append("**🛡️ High Consistency:** This player is remarkably consistent game-to-game. The simulation returned a very tight grouping around the mean, making this a mathematically safer floor projection.")
+            if fano > 2.2 and 'AVOID' in tier:
+                decisions.append((f"the player's extreme game-to-game inconsistency (a boom-or-bust nature). The Monte Carlo simulation generated wildly unpredictable outcomes, ruining the safety of the play.", 90))
+            elif fano < 1.3 and fano > 0.1 and tier in ['PLAY', 'STRONG PLAY', 'SAFE PLAY']:
+                decisions.append((f"his remarkable rebounding consistency. The simulation grouped very tightly around the mean, offering an extremely safe mathematical floor.", 85))
                 
-        # 6. Edge Explanation (To answer the user's question about 30% edges)
-        if line and len(paragraphs) > 0:
-            abs_diff = abs(proj - line)
-            if abs_diff > 1.8:
-                paragraphs.append("*Note on Edge: You may notice a massive Edge % here (e.g. 25%+). This is not an error; it happens when the model's projection significantly deviates from the sportsbook line (usually due to unpriced injuries or trend breaks), resulting in the simulation winning overwhelmingly.*")
+        # Hot Streak
+        trend = proj_data.get('trend_data', [])
+        if len(trend) >= 4:
+            last_n = [g['rebounds'] for g in trend[:min(5, len(trend))]]
+            avg_last_n = sum(last_n) / len(last_n) if last_n else 0
+            if avg_last_n >= proj + 1.5:
+                decisions.append((f"a massive recent hot streak (averaging {avg_last_n:.1f} rebs). This triggered the dynamic weighting engine to override his stale season averages and heavily trust his recent surge.", 80))
+            elif avg_last_n <= proj - 1.5:
+                decisions.append((f"a brutal recent cold streak (slumping to just {avg_last_n:.1f} rebs). The model actively penalized his baseline out of respect for this negative trend break.", 80))
+
+        if decisions:
+            # Sort by priority score (index 1)
+            decisions.sort(key=lambda x: x[1], reverse=True)
+            top_reason = decisions[0][0]
+            paragraphs.append(f"**🎯 The Deciding Factor:** Beyond the environment, the primary variable locking in this {tier} is {top_reason}")
             
         return "\n\n".join(paragraphs)
 
