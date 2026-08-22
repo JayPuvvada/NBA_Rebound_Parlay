@@ -109,11 +109,23 @@ class ReboundSimulator:
         }
 
     def get_probabilities(self, sim_result, line):
+        from scipy.stats import nbinom
+        
         samples = sim_result['samples']
+        n = sim_result['params']['n']
+        p = sim_result['params']['p']
+        
+        k_floor = int(np.floor(line))
+        k_ceil = int(np.ceil(line))
+        
+        # scipy.stats.nbinom.cdf(k, n, p) = P(X <= k)
+        cdf_floor = nbinom.cdf(k_floor, n, p)
+        cdf_below = nbinom.cdf(k_ceil - 1, n, p) if k_ceil - 1 >= 0 else 0.0
+        
         return {
-            'over_probability': float(np.mean(samples > line)),
-            'under_probability': float(np.mean(samples < line)),
-            'push_probability': float(np.mean(samples == line)),
+            'over_probability': float(1.0 - cdf_floor),
+            'under_probability': float(cdf_below),
+            'push_probability': float(cdf_floor - cdf_below),
             'ci_68': np.percentile(samples, [16, 84]).tolist(),
             'ci_95': np.percentile(samples, [2.5, 97.5]).tolist(),
         }

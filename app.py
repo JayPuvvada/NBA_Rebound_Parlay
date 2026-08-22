@@ -12,7 +12,7 @@ from src.features import FeatureEngineer
 from src.model import ReboundSimulator
 from src.recommendation import weighted_hit_rate, tier_from_signals, edge_from_odds
 from src.cheat_sheet import project_team
-from src.utils import get_logger
+from src.utils import get_logger, eastern_today
 
 load_dotenv()
 log = get_logger('app')
@@ -28,8 +28,8 @@ try:
     simulator = ReboundSimulator()
     log.info("Model components initialized.")
 except Exception as e:
-    log.error(f"Error initializing components: {e}")
-    traceback.print_exc()
+    log.exception(f"Fatal: Error initializing components: {e}")
+    sys.exit(1)
 
 
 def _detect_home_game(loader, team_id, date_str):
@@ -63,16 +63,23 @@ def predict():
 
         player_name = data.get('player')
         opp_team = (data.get('opponent') or '').upper()
-        spread = float(data.get('spread', 0.0) or 0.0)
 
-        line_val = data.get('line')
-        line = float(line_val) if line_val not in (None, '') else None
+        def _to_float(val, field, default=None):
+            try:
+                return float(val) if val not in (None, '') else default
+            except (TypeError, ValueError):
+                raise ValueError(f"'{field}' must be numeric")
 
-        odds_val = data.get('odds')
-        american_odds = int(odds_val) if odds_val not in (None, '') else None
+        try:
+            spread = _to_float(data.get('spread'), 'spread', 0.0)
+            line = _to_float(data.get('line'), 'line')
+            odds_val = data.get('odds')
+            american_odds = int(odds_val) if odds_val not in (None, '') else None
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
 
         matchup = data.get('matchup') or None
-        date_str = data.get('date') or _date.today().isoformat()
+        date_str = data.get('date') or eastern_today()
 
         # Home/away: client-supplied takes precedence, else auto-detect from schedule,
         # else default True (old behavior).
@@ -99,8 +106,8 @@ def predict():
             detected = _detect_home_game(loader, team_id, date_str)
             home_game = True if detected is None else detected
 
-        team_rest = loader.get_days_rest(team_id)
-        opp_rest = loader.get_days_rest(opp_id) if opp_id else loader.DEFAULT_DAYS_REST
+        team_rest = loader.get_days_rest(team_id, as_of=date_str)
+        opp_rest = loader.get_days_rest(opp_id, as_of=date_str) if opp_id else loader.DEFAULT_DAYS_REST
 
         proj_data = engineer.compute_composite_projection(
             pid,
@@ -180,6 +187,37 @@ def predict():
                 'edge': edge_info['edge'],
             })
             response['summary'] = engineer.generate_pick_summary(proj_data_for_summary, line)
+            
+            # Record to ledger
+            if tier not in ('AVOID', 'LOW_VOLUME', '-'):
+                try:
+                    from src.ledger import PredictionLedger
+                    # Basic mapping or just use team_id if we don't fetch abbreviation
+                    from nba_api.stats.static import teams as static_teams
+                    player_team_abbr = "???"
+                    for t in static_teams.get_teams():
+                        if t['id'] == team_id:
+                            player_team_abbr = t['abbreviation']
+                            break
+                            
+                    PredictionLedger().record_prediction(
+                        game_date=date_str,
+                        player=player_name,
+                        team=player_team_abbr, 
+                        opponent=opp_team, 
+                        is_home=home_game,
+                        projection=mean_proj,
+                        line=line,
+                        american_odds=american_odds if american_odds is not None else -110,
+                        direction=direction,
+                        tier=tier,
+                        confidence=confidence,
+                        over_prob=over_prob,
+                        under_prob=under_prob,
+                        ev_roi=edge_info.get('ev_roi', 0.0)
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to record prediction in ledger: {e}")
         else:
             probs = simulator.get_probabilities(sim_res, mean_proj)
             response['range'] = f"{probs['ci_68'][0]:.1f} - {probs['ci_68'][1]:.1f}"
@@ -187,8 +225,8 @@ def predict():
         return jsonify(response)
 
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        log.exception(f"Error in /predict: {e}")
+        return jsonify({'error': 'An internal error occurred.'}), 500
 
 
 @app.route('/games')
@@ -196,7 +234,7 @@ def get_games():
     """Return the list of NBA games for a given date."""
     from nba_api.stats.static import teams as nba_teams_static
     try:
-        date_str = request.args.get('date') or _date.today().isoformat()
+        date_str = request.args.get('date') or eastern_today()
         raw_games = loader.get_games_for_date(date_str)
         if not raw_games:
             return jsonify({'games': [], 'message': f'No games found for {date_str}.'})
@@ -262,16 +300,16 @@ def cheat_sheet():
             except Exception:
                 traceback.print_exc()
 
-        home_rest = loader.get_days_rest(home_id)
-        away_rest = loader.get_days_rest(away_id) if away_id else loader.DEFAULT_DAYS_REST
+        home_rest = loader.get_days_rest(home_id, as_of=date_str)
+        away_rest = loader.get_days_rest(away_id, as_of=date_str) if away_id else loader.DEFAULT_DAYS_REST
 
         home_results = project_team(
             loader, engineer, simulator,
-            home_id, home_abbr, away_abbr, True, home_rest, away_rest, player_odds
+            home_id, home_abbr, away_abbr, True, home_rest, away_rest, player_odds, date_str
         )
         away_results = project_team(
             loader, engineer, simulator,
-            away_id, away_abbr, home_abbr, False, away_rest, home_rest, player_odds
+            away_id, away_abbr, home_abbr, False, away_rest, home_rest, player_odds, date_str
         )
 
         return jsonify(home_results + away_results)

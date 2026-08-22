@@ -3,7 +3,8 @@ from nba_api.stats.endpoints import playergamelog, teamgamelog, leaguedashteamst
 import time
 import random
 
-from src.utils import normalize_name, get_logger
+from src.utils import normalize_name, get_logger, current_season
+from src.cache import ttl_cache
 
 log = get_logger('data_loader')
 
@@ -34,8 +35,8 @@ def get_random_headers():
     }
 
 class NBADataLoader:
-    def __init__(self, season='2025-26'):
-        self.season = season
+    def __init__(self, season=None):
+        self.season = season or current_season()
         # Simple in-memory cache to avoid spamming API during dev
         self._cache = {}
         self.leaguedashplayerstats = leaguedashplayerstats
@@ -139,12 +140,9 @@ class NBADataLoader:
                 return team['id']
         return None
 
+    @ttl_cache(seconds=2700) # 45 minutes
     def get_player_gamelog(self, player_id):
         """Fetches game log for a specific player (Regular Season + Playoffs)."""
-        key = f"player_log_{player_id}_{self.season}_combined"
-        if self._get_from_cache(key) is not None:
-            return self._get_from_cache(key)
-
         dfs = []
         try:
             reg_log = self._retry_api_call(
@@ -175,15 +173,11 @@ class NBADataLoader:
         else:
             df = pd.DataFrame()
 
-        self._set_cache(key, df)
         return df
 
+    @ttl_cache(seconds=2700) # 45 minutes
     def get_team_gamelog(self, team_id):
         """Fetches game log for a specific team (Regular Season + Playoffs)."""
-        key = f"team_log_{team_id}_{self.season}_combined"
-        if self._get_from_cache(key) is not None:
-            return self._get_from_cache(key)
-
         dfs = []
         try:
             reg_log = self._retry_api_call(
@@ -213,7 +207,6 @@ class NBADataLoader:
         else:
             df = pd.DataFrame()
 
-        self._set_cache(key, df)
         return df
 
     def get_team_stats(self):
@@ -597,7 +590,7 @@ class NBADataLoader:
 
     DEFAULT_DAYS_REST = 2  # Neutral assumption when unknown; keeps rest_mult at 1.0
 
-    def get_days_rest(self, team_id):
+    def get_days_rest(self, team_id, as_of: str = None):
         """
         Days since the last game for a team.
         0 = played yesterday (B2B), 1 = played 2 days ago, etc.
@@ -616,7 +609,8 @@ class NBADataLoader:
             except ValueError:
                 last_date = datetime.strptime(last_game_date_str, "%Y-%m-%d")
 
-            days_diff = (datetime.now() - last_date).days
+            target_date = datetime.strptime(as_of, "%Y-%m-%d") if as_of else datetime.now()
+            days_diff = (target_date - last_date).days
             rest = max(0, days_diff - 1)
             log.debug(f"Team {team_id} last game: {last_game_date_str} -> {days_diff} days ago -> {rest} rest")
             return rest
@@ -624,16 +618,13 @@ class NBADataLoader:
             log.warning(f"Error calculating rest for team {team_id}: {e}")
             return self.DEFAULT_DAYS_REST
 
+    @ttl_cache(seconds=900) # 15 minutes
     def get_games_for_date(self, date_str):
         """
         Get games for a specific date (YYYY-MM-DD).
         Always uses ScoreboardV2 with the explicit date string to guarantee
         the correct slate regardless of time-of-day or timezone.
         """
-        key = f"games_{date_str}"
-        cached = self._get_from_cache(key)
-        if cached: return cached
-        
         try:
             from nba_api.stats.endpoints import scoreboardv2
             
@@ -692,17 +683,14 @@ class NBADataLoader:
             log.warning(f"Error fetching games for {date_str}: {e}")
             return []
 
+    @ttl_cache(seconds=900) # 15 minutes
     def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel'):
         """
         Targeted Odds Fetch:
         1. Get ALL events for the date (cheap/free-ish).
-        2. Find the event matching the teams.
+        2. Find the event matching the teams AND date.
         3. Get odds ONLY for that event ID (costs quota).
         """
-        key = f"odds_{home_team_code}_{away_team_code}_{date_str}_{bookmaker}"
-        cached = self._get_from_cache(key)
-        if cached: return cached
-
         import requests
         
         try:
@@ -738,13 +726,14 @@ class NBADataLoader:
             for event in events:
                 e_home = event['home_team']
                 e_away = event['away_team']
+                e_date = event.get('commence_time', '')[:10]
                 
-                # Check for match (either side)
-                # If "Celtics" in "Boston Celtics"
+                # Check for match (either side) and verify date
                 if (h_name_part in e_home and a_name_part in e_away) or \
                    (h_name_part in e_away and a_name_part in e_home):
-                    target_event_id = event['id']
-                    break
+                    if e_date == date_str:
+                        target_event_id = event['id']
+                        break
             
             if not target_event_id:
                 log.debug("No matching Odds Event found.")
@@ -783,7 +772,6 @@ class NBADataLoader:
                                     'book': book['title']
                                 }
             
-            self._set_cache(key, player_props)
             return player_props
 
         except Exception as e:

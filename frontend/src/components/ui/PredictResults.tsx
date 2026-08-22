@@ -1,8 +1,9 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { TrendChart } from "@/components/ui/TrendChart";
+import { PredictResponse } from "@/types/api";
 
 interface PredictResultsProps {
-  data: any;
+  data: PredictResponse;
 }
 
 function getComponentLabel(key: string, val: number): { label: string; colorClass: string } {
@@ -153,17 +154,17 @@ export function PredictResults({ data }: PredictResultsProps) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <h4 className="text-xs uppercase text-red-400 font-semibold mb-2">Team Injuries</h4>
-                {data.injuries.team_list?.length > 0 ? (
+                {(data.injuries.team_list?.length ?? 0) > 0 ? (
                   <ul className="space-y-1 text-sm text-zinc-400">
-                    {data.injuries.team_list.map((inj: string, i: number) => <li key={i}>• {inj}</li>)}
+                    {data.injuries.team_list?.map((inj: string, i: number) => <li key={i}>• {inj}</li>)}
                   </ul>
                 ) : <p className="text-xs text-zinc-600">No injuries reported.</p>}
               </div>
               <div>
                 <h4 className="text-xs uppercase text-red-400 font-semibold mb-2">Opponent Injuries</h4>
-                {data.injuries.opp_list?.length > 0 ? (
+                {(data.injuries.opp_list?.length ?? 0) > 0 ? (
                   <ul className="space-y-1 text-sm text-zinc-400">
-                    {data.injuries.opp_list.map((inj: string, i: number) => <li key={i}>• {inj}</li>)}
+                    {data.injuries.opp_list?.map((inj: string, i: number) => <li key={i}>• {inj}</li>)}
                   </ul>
                 ) : <p className="text-xs text-zinc-600">No injuries reported.</p>}
               </div>

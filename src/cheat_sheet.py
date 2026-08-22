@@ -9,7 +9,7 @@ log = get_logger('cheat_sheet')
 
 
 def project_team(loader, engineer, simulator, team_id, team_abbr, opp_abbr,
-                 is_home, team_rest, opp_rest, player_odds):
+                 is_home, team_rest, opp_rest, player_odds, date_str=None):
     """
     Build projections for every rostered player on one team.
     Returns a list of dicts sorted by projection desc.
@@ -96,9 +96,29 @@ def project_team(loader, engineer, simulator, team_id, team_abbr, opp_abbr,
 
             if confidence is not None:
                 entry['confidence'] = round(confidence * 100, 1)
-            if over_prob is not None:
-                entry['over_prob'] = round(over_prob * 100, 1)
-                entry['under_prob'] = round(under_prob * 100, 1)
+            # Record prediction to ledger
+            if line is not None and tier not in ('AVOID', 'LOW_VOLUME', '-'):
+                try:
+                    from src.ledger import PredictionLedger
+                    ledger = PredictionLedger()
+                    ledger.record_prediction(
+                        game_date=date_str or '1970-01-01',
+                        player=pname,
+                        team=team_abbr,
+                        opponent=opp_abbr,
+                        is_home=is_home,
+                        projection=mean_proj,
+                        line=line,
+                        american_odds=int(odds_val) if odds_val is not None else -110,
+                        direction=direction,
+                        tier=tier,
+                        confidence=confidence,
+                        over_prob=over_prob,
+                        under_prob=under_prob,
+                        ev_roi=edge if edge is not None else 0.0
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to record ledger: {e}")
 
             results.append(entry)
 

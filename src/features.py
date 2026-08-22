@@ -73,6 +73,10 @@ class FeatureEngineer:
         dnp_count = int((logs['MIN_FLOAT'] < 5).sum())
         dnp_rate = dnp_count / total_game_entries if total_game_entries > 0 else 0.0
 
+        # Calculate empirical variance INCLUDING DNPs before filtering
+        reb_all = pd.concat([logs['REB'], pd.Series([0] * dnp_count)])
+        reb_variance = float(reb_all.var()) if len(reb_all) > 2 else None
+
         # Avoid divide by zero on per-minute rates
         logs = logs[logs['MIN_FLOAT'] > 0].copy()
 
@@ -107,13 +111,20 @@ class FeatureEngineer:
         # 4. Opponent History (Filtered by Opponent Abbrev)
         opp_oreb_rate = None
         opp_dreb_rate = None
+        season_oreb = logs['OREB_PM'].mean()
+        season_dreb = logs['DREB_PM'].mean()
         if opponent_abbrev:
             # Matchup string usually contains abbreviations like "OKC vs. GSW"
             # We look for the opponent abbreviation in the matchup string
             opp_logs = logs[logs['MATCHUP'].str.contains(opponent_abbrev, case=False)]
             if not opp_logs.empty:
-                opp_oreb_rate = opp_logs['OREB_PM'].mean()
-                opp_dreb_rate = opp_logs['DREB_PM'].mean()
+                opp_raw_oreb = opp_logs['OREB_PM'].mean()
+                opp_raw_dreb = opp_logs['DREB_PM'].mean()
+                # Apply shrinkage toward the season rate for small samples (3-game prior)
+                k = len(opp_logs)
+                shrink = k / (k + 3)
+                opp_oreb_rate = shrink * opp_raw_oreb + (1 - shrink) * season_oreb
+                opp_dreb_rate = shrink * opp_raw_dreb + (1 - shrink) * season_dreb
 
         # 5. Trend Data for Chart
         last_10_trend = []
@@ -138,8 +149,6 @@ class FeatureEngineer:
 
         # 6. Variance-Aware Stats (actual game-to-game variance)
         reb_per_game = logs['REB'].astype(float)
-        reb_variance = float(reb_per_game.var()) if len(reb_per_game) > 2 else None
-        reb_std = float(reb_per_game.std()) if len(reb_per_game) > 2 else None
         reb_mean = float(reb_per_game.mean()) if len(reb_per_game) > 0 else None
 
         # 7. Minutes Trend Detection (linear regression on last 5 games)
@@ -155,8 +164,8 @@ class FeatureEngineer:
         return {
             'player_name': info.iloc[0].get('DISPLAY_FIRST_LAST', 'Unknown'),
             'position': position,
-            'season_oreb_rate': logs['OREB_PM'].mean(),
-            'season_dreb_rate': logs['DREB_PM'].mean(),
+            'season_oreb_rate': season_oreb,
+            'season_dreb_rate': season_dreb,
             # Weighted recent form (Last 5 games count 50% more)
             'recent_oreb_rate': (logs.head(5)['OREB_PM'].mean() * 1.5 + logs['OREB_PM'].mean()) / 2.5,
             'recent_dreb_rate': (logs.head(5)['DREB_PM'].mean() * 1.5 + logs['DREB_PM'].mean()) / 2.5,
@@ -169,7 +178,7 @@ class FeatureEngineer:
             'last_10_games': last_10_trend,
             # New: Variance-Aware Simulation data
             'reb_variance': reb_variance,
-            'reb_std': reb_std,
+            'reb_std': float(reb_all.std()) if len(reb_all) > 2 else None,
             'reb_mean': reb_mean,
             'games_played': len(logs),
             'dnp_rate': dnp_rate,
@@ -274,26 +283,35 @@ class FeatureEngineer:
                 
         return base_factor
 
-    def adjust_minutes_for_injuries(self, player_id, team_id, position, base_minutes):
+    def adjust_minutes_for_injuries(self, base_minutes, player_id, team_id):
         """
-        Heuristic to boost minutes if key teammates at the same position are OUT.
+        Adjust minutes up if a starter is out, or down if the player themself is questionable.
+        Uses cached roster/depth charts internally.
         """
+        from src.utils import injury_bucket
+        
         injury_report = self.loader.get_injury_report()
+        info = self.loader.get_common_player_info(player_id)
+        if info.empty:
+            return base_minutes
+
+        player_name = info.iloc[0]['DISPLAY_FIRST_LAST']
+        norm_player_name = normalize_name(player_name)
+        
+        player_status = injury_report.get(norm_player_name, 'Active')
+        bucket = injury_bucket(player_status)
+        if bucket == 'OUT':
+            return 0.0
+        
+        # Haircut for GTD/Questionable starters playing hurt
+        if bucket == 'QUESTIONABLE':
+            base_minutes *= 0.75
+
         roster = self.loader.get_team_roster(team_id)
-        
         if roster.empty:
-            return base_minutes, None
+            return base_minutes
 
-        # 1. Check if the player themselves are OUT
-        p_info = self.loader.get_common_player_info(player_id)
-        p_name = p_info.iloc[0].get('DISPLAY_FIRST_LAST', 'Unknown')
-        
-        p_status = injury_report.get(normalize_name(p_name), 'Active')
-        if 'out' in p_status.lower() or 'inactive' in p_status.lower() or 'nwt' in p_status.lower():
-            return 0.0, f"{p_name} is listed as {p_status}!"
-
-        # 2. Check for Teammate Injuries (Same position, Starter minutes)
-        # Fetch advanced league stats to get teammate minutes (might be cached)
+        # Check for Teammate Injuries (Same position, Starter minutes)
         league_adv_key = f"league_player_stats_advanced_{self.loader.season}"
         league_adv = self.loader._get_from_cache(league_adv_key)
         if league_adv is None:
@@ -301,17 +319,14 @@ class FeatureEngineer:
             league_adv = self.loader._get_from_cache(league_adv_key)
 
         if league_adv is None:
-            return base_minutes, None
+            return base_minutes
 
         roster_stats = pd.merge(roster, league_adv[['PLAYER_ID', 'MIN']], on='PLAYER_ID', how='inner')
         
-        # Look for "Starters" at the same position (> 24 MPG)
         teammate_boost = 0.0
-        injury_notes = []
-        
-        # Define groupings for better matching
-        is_big = any(pos in position for pos in ['F', 'C'])
-        is_guard = 'G' in position
+        p_pos = info.iloc[0].get('POSITION', 'F')
+        is_big = any(pos in p_pos for pos in ['F', 'C'])
+        is_guard = 'G' in p_pos
 
         for _, row in roster_stats.iterrows():
             if row['PLAYER_ID'] == player_id: continue
@@ -328,16 +343,13 @@ class FeatureEngineer:
                 if row['MIN'] > 24.0:
                     t_name = row['PLAYER']
                     t_status = injury_report.get(normalize_name(t_name), 'Active')
-                    if 'out' in t_status.lower() or 'inactive' in t_status.lower():
+                    if injury_bucket(t_status) == 'OUT':
                         # Significant boost for backup if starter is out
-                        # We limit total boost to avoid crazy minutes
                         boost = 8.0 if base_minutes < 22 else 4.0
                         teammate_boost += boost
-                        injury_notes.append(f"{t_name} is OUT")
 
         # Clamp total minutes at ~36 unless manual
-        new_minutes = min(36.0, base_minutes + teammate_boost)
-        return new_minutes, ", ".join(injury_notes) if injury_notes else None
+        return min(36.0, base_minutes + teammate_boost)
 
     def get_cannibalization_factor(self, team_id, opponent_abbrev, current_player_id, base_projection_func, current_proj_minutes):
         """
@@ -460,12 +472,11 @@ class FeatureEngineer:
                 base_minutes *= (1.0 - penalty_frac)
 
         # Injury Adjustment for Minutes
-        injury_note = None
         if not manual_minutes:
-            base_minutes, injury_note = self.adjust_minutes_for_injuries(player_id, p_stats['team_id'], p_stats['position'], base_minutes)
+            base_minutes = self.adjust_minutes_for_injuries(base_minutes, player_id, p_stats['team_id'])
 
-        if base_minutes == 0:
-            return {'error': injury_note or 'Player is OUT'}
+        if base_minutes <= 0:
+            return {'error': 'Player is OUT or injured'}
 
         # Blowout Logic (Minutes Damping Only)
         abs_spread = abs(spread)
@@ -610,7 +621,6 @@ class FeatureEngineer:
             'modifiers': {
                 'blowout_risk': blowout_risk_label,
                 'minutes': round(proj_minutes, 1),
-                'injury_note': injury_note
             }
         }
 
@@ -792,9 +802,10 @@ class FeatureEngineer:
         if tier == 'AVOID' or tier == '-':
             p1 += f" Although the math shows a **{proj}** rebound projection against a line of **{line}**, the extreme volatility or lack of statistical edge makes this mathematically unsafe to bet."
         else:
-            win_perc = int(confidence * 100) if confidence > 1 else int(confidence)
-            ev_perc = round(edge * 100, 1) if edge < 1 else round(edge, 1)
-            p1 += f" The algorithmic engine projects **{player}** to grab **{proj} rebounds**. Based on a {win_perc}% simulation win rate against the current sportsbook odds, this creates a strong **+{ev_perc}% Expected Value** edge."
+            conf_frac = confidence / 100.0 if confidence > 1.0 else confidence
+            win_perc = round(conf_frac * 100)
+            ev_pct = round((edge * 100 if abs(edge) <= 1.0 else edge), 1)
+            p1 += f" The algorithmic engine projects **{player}** to grab **{proj} rebounds**. Based on a {win_perc}% simulation win rate against the current sportsbook odds, this creates a strong **+{ev_pct}% Expected Value** edge."
         paragraphs.append(p1)
         
         # 2. The Mathematical Tug-of-War (Environment weights)

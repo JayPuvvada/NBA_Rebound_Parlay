@@ -2,6 +2,7 @@ import { useState } from "react";
 import { SplineSceneBasic } from "@/components/ui/demo";
 import { CheatSheet } from "@/components/ui/CheatSheet";
 import { PredictForm } from "@/components/ui/PredictForm";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import "./index.css";
 
 function App() {
@@ -40,7 +41,9 @@ function App() {
 
       {/* Tab Content */}
       <section id="edge-section" className="max-w-7xl mx-auto p-8 pb-24">
-        {activeTab === "edge" ? <CheatSheet /> : <PredictForm />}
+        <ErrorBoundary>
+          {activeTab === "edge" ? <CheatSheet /> : <PredictForm />}
+        </ErrorBoundary>
       </section>
     </main>
   );

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PredictResults } from "@/components/ui/PredictResults";
 import { Loader2 } from "lucide-react";
+import { PredictResponse } from "@/types/api";
 
 export function PredictForm() {
   const [player, setPlayer] = useState("");
@@ -13,7 +14,7 @@ export function PredictForm() {
   const [venue, setVenue] = useState<"auto" | "home" | "away">("auto");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<any | null>(null);
+  const [result, setResult] = useState<PredictResponse | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

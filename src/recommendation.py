@@ -2,7 +2,7 @@
 Tiering + edge logic shared between /predict and /cheat-sheet.
 Extracted so the two endpoints can't drift.
 """
-from src.utils import implied_prob_from_american
+from src.utils import implied_prob_from_american, ev_roi, kelly_criterion
 
 MIN_TREND_GAMES = 6       # weighted hit rate requires at least this many games
 MIN_TIER_PROJECTION = 3.0 # projections below this are too noisy for tier calls
@@ -75,4 +75,6 @@ def edge_from_odds(confidence, american_odds):
         'american_odds': int(odds),
         'implied_prob': implied,
         'edge': confidence - implied,
+        'ev_roi': ev_roi(confidence, odds),
+        'kelly_stake': kelly_criterion(confidence, odds)
     }

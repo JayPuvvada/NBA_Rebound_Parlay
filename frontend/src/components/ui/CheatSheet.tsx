@@ -3,17 +3,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { PlayerDetailPanel } from "@/components/ui/PlayerDetailPanel";
 import { Loader2 } from "lucide-react";
 
-interface GameInfo {
-  home: string;
-  away: string;
-}
+import { Game, CheatRow } from "@/types/api";
 
 export function CheatSheet() {
   const todayStr = new Date().toISOString().split("T")[0];
   const [date, setDate] = useState<string>(todayStr);
-  const [games, setGames] = useState<GameInfo[]>([]);
-  const [selectedGame, setSelectedGame] = useState<GameInfo | null>(null);
-  const [data, setData] = useState<any[] | null>(null);
+  const [games, setGames] = useState<Game[]>([]);
+  const [selectedGame, setSelectedGame] = useState<Game | null>(null);
+  const [data, setData] = useState<CheatRow[] | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingGames, setLoadingGames] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,12 +46,15 @@ export function CheatSheet() {
   useEffect(() => {
     if (!selectedGame) return;
 
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     const fetchData = async () => {
       setLoading(true);
       setError(null);
       setExpandedIdx(null);
       try {
-        const res = await fetch(`/cheat-sheet?team=${selectedGame.home}&date=${date}&book=fanduel`);
+        const res = await fetch(`/cheat-sheet?team=${selectedGame.home}&date=${date}&book=fanduel`, { signal });
 
         if (!res.ok) {
           try {
@@ -70,12 +70,17 @@ export function CheatSheet() {
         if (json.error) throw new Error(json.error);
         setData(Array.isArray(json) ? json : []);
       } catch (err: any) {
+        if (err.name === 'AbortError') return;
         setError(err.message || "Failed to fetch projections.");
       } finally {
-        setLoading(false);
+        if (!signal.aborted) setLoading(false);
       }
     };
     fetchData();
+
+    return () => {
+      controller.abort();
+    };
   }, [selectedGame, date]);
 
   // Group data by team
@@ -139,7 +144,7 @@ export function CheatSheet() {
     );
   };
 
-  const renderTeamTable = (players: any[], teamCode: string, isHome: boolean, startIdx: number) => {
+  const renderTeamTable = (players: CheatRow[], teamCode: string, isHome: boolean, startIdx: number) => {
     if (players.length === 0) return null;
     return (
       <div className="mb-6">
