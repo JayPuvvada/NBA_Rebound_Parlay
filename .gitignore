@@ -10,3 +10,4 @@ nba_model_app.zip
 node_modules/
 frontend/dist/
 *.log
+*.tsbuildinfo
