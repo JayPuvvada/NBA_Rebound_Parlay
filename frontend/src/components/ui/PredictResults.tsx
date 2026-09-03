@@ -74,7 +74,7 @@ export function PredictResults({ data }: PredictResultsProps) {
             })()}
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-3 gap-4 mb-4 p-4 bg-zinc-900/50 rounded-lg">
+            <div className="grid grid-cols-4 gap-4 mb-4 p-4 bg-zinc-900/50 rounded-lg">
               <div className="text-center">
                 <div className="text-xs text-zinc-500 uppercase">Over Probability</div>
                 <div className="text-xl font-bold text-emerald-400">{analysis.over_prob}%</div>
@@ -84,9 +84,15 @@ export function PredictResults({ data }: PredictResultsProps) {
                 <div className="text-xl font-bold text-red-400">{analysis.under_prob}%</div>
               </div>
               <div className="text-center">
-                <div className="text-xs text-zinc-500 uppercase">Edge</div>
+                <div className="text-xs text-zinc-500 uppercase" title="Expected Value / Return on Investment">EV ROI</div>
                 <div className="text-xl font-bold text-yellow-400">
-                  {analysis.true_edge !== undefined ? `${analysis.true_edge}%` : `${analysis.edge}%`}
+                  {analysis.ev_roi !== undefined ? `+${analysis.ev_roi}%` : `${analysis.edge}%`}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 uppercase" title="Suggested Kelly Criterion Stake">Kelly Stake</div>
+                <div className="text-xl font-bold text-blue-400">
+                  {analysis.kelly_stake !== undefined ? `${analysis.kelly_stake}%` : '-'}
                 </div>
               </div>
             </div>

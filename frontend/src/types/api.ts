@@ -34,6 +34,8 @@ export interface CheatRow {
   components: ComponentBreakdown;
   trend: TrendGame[];
   edge_raw: number;
+  ev_roi?: number;
+  kelly_stake?: number;
   over_prob?: number;
   under_prob?: number;
   confidence?: number;
@@ -48,6 +50,8 @@ export interface PredictAnalysis {
   recommendation: string;
   rec_color: string;
   edge: number;
+  ev_roi: number;
+  kelly_stake: number;
   hit_rate: number;
   hit_rate_games: number;
   fano: number;

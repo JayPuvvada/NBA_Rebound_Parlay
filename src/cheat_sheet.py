@@ -61,7 +61,13 @@ def project_team(loader, engineer, simulator, team_id, team_abbr, opp_abbr,
                 tier, _ = tier_from_signals(confidence, direction, line, floor_val, hit_rate, n_games,
                                             mean_proj=mean_proj)
 
-                edge = edge_from_odds(confidence, int(odds_val) if odds_val is not None else None)['edge']
+                edge_info = edge_from_odds(confidence, int(odds_val) if odds_val is not None else None)
+                edge = edge_info['edge']
+                ev_roi_val = edge_info.get('ev_roi', 0.0)
+                kelly_stake_val = edge_info.get('kelly_stake', 0.0)
+            else:
+                ev_roi_val = 0.0
+                kelly_stake_val = 0.0
 
             rest_note = 'Home' if is_home else 'Away'
             if team_rest == 0:
@@ -80,6 +86,8 @@ def project_team(loader, engineer, simulator, team_id, team_abbr, opp_abbr,
                 'components': proj_data.get('components', {}),
                 'trend': proj_data.get('trend_data', []),
                 'edge_raw': edge if edge is not None else 0,
+                'ev_roi': ev_roi_val,
+                'kelly_stake': kelly_stake_val,
             }
 
             # Summary narrative needs the fields we just computed.

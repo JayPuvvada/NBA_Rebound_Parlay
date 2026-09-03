@@ -174,6 +174,8 @@ def predict():
                 'american_odds': edge_info['american_odds'],
                 'implied_prob': round(edge_info['implied_prob'] * 100, 1),
                 'true_edge': round(edge_info['edge'] * 100, 1),
+                'ev_roi': round(edge_info['ev_roi'] * 100, 1) if edge_info.get('ev_roi') else 0.0,
+                'kelly_stake': round(edge_info['kelly_stake'] * 100, 2) if edge_info.get('kelly_stake') else 0.0,
             }
 
             # Narrative summary

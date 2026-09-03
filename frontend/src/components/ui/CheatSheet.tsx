@@ -6,7 +6,9 @@ import { Loader2 } from "lucide-react";
 import { Game, CheatRow } from "@/types/api";
 
 export function CheatSheet() {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(new Date());
   const [date, setDate] = useState<string>(todayStr);
   const [games, setGames] = useState<Game[]>([]);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
@@ -131,6 +133,9 @@ export function CheatSheet() {
               </span>
             ) : <span className="text-zinc-600">—</span>}
           </td>
+          <td className="px-4 py-3 text-right font-mono text-yellow-400 text-sm">
+            {proj.ev_roi !== undefined && proj.ev_roi !== 0 ? `+${(proj.ev_roi * 100).toFixed(1)}%` : "—"}
+          </td>
           <td className={`px-4 py-3 text-sm font-semibold ${tierClass}`}>{proj.tier || "—"}</td>
         </tr>
         {isExpanded && (
@@ -161,6 +166,7 @@ export function CheatSheet() {
               <th className="px-4 py-2.5 text-right">Proj</th>
               <th className="px-4 py-2.5 text-right">Line</th>
               <th className="px-4 py-2.5">Dir</th>
+              <th className="px-4 py-2.5 text-right">EV</th>
               <th className="px-4 py-2.5 rounded-tr-md">Tier</th>
             </tr>
           </thead>
