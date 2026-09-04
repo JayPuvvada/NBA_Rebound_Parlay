@@ -78,12 +78,33 @@
 }
 
 /* Basketball bounce animation */
+.basketball-animation {
+  animation: bounce-ball 2s ease-in-out infinite;
+}
+
+.basketball-shadow-animation {
+  animation: shadow-pulse 2s ease-in-out infinite;
+}
+
 @keyframes bounce-ball {
   0%, 100% {
     transform: translateY(0);
   }
   50% {
     transform: translateY(-30px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .basketball-animation,
+  .basketball-shadow-animation {
+    animation: none;
+  }
+
+  .animate-pulse,
+  .animate-spin {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
   }
 }
 

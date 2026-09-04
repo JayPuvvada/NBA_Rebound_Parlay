@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Exit on error
-set -o errexit
+set -euo pipefail
 
-# 1. Install Python dependencies
-# Temporarily clear proxy variables so pip can reach PyPI without a 407 authentication error
-HTTP_PROXY="" HTTPS_PROXY="" http_proxy="" https_proxy="" pip3 install -r requirements.txt
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 2. Build the React Frontend
-cd frontend
-npm install
+python3 -m pip install --disable-pip-version-check -r "$PROJECT_DIR/requirements.txt"
+
+cd "$PROJECT_DIR/frontend"
+npm ci
 npm run build
-cd ..
