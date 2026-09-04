@@ -1,30 +1,30 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from "recharts";
-
-interface TrendGame {
-  date: string;
-  rebounds: number;
-  opponent: string;
-  minutes?: number;
-}
+import { getTrendResult } from "@/lib/trend";
+import type { Direction, TrendGame } from "@/types/api";
 
 interface TrendChartProps {
   data: TrendGame[];
   line: number | null;
+  direction?: Direction | null;
   height?: number;
 }
 
-export function TrendChart({ data, line, height = 150 }: TrendChartProps) {
+export function TrendChart({ data, line, direction, height = 150 }: TrendChartProps) {
   if (!data || data.length === 0) return null;
 
   const chartData = data.map(d => ({
     opponent: d.opponent,
     rebounds: d.rebounds,
     date: d.date,
-    hit: line !== null ? d.rebounds > line : true,
+    result: getTrendResult(d.rebounds, line, direction),
   }));
 
   return (
-    <div style={{ width: "100%", height }}>
+    <div
+      style={{ width: "100%", height }}
+      role="img"
+      aria-label={`Recent rebound totals${line !== null ? ` compared with the ${direction ? `${direction.toLowerCase()} ` : ""}${line} line` : ""}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
           <XAxis 
@@ -46,12 +46,13 @@ export function TrendChart({ data, line, height = 150 }: TrendChartProps) {
               color: "#ffffff",
               fontSize: 12
             }}
-            formatter={(value: number) => [`${value} rebounds`, "Rebounds"]}
-            labelFormatter={(label: string, payload: any[]) => {
+            formatter={(value) => [`${String(value)} rebounds`, "Rebounds"]}
+            labelFormatter={(label, payload) => {
               if (payload && payload[0]) {
-                return `vs ${label} (${payload[0].payload.date})`;
+                const entry = payload[0].payload as { date?: string };
+                return `vs ${String(label)}${entry.date ? ` (${entry.date})` : ""}`;
               }
-              return `vs ${label}`;
+              return `vs ${String(label)}`;
             }}
           />
           {line !== null && (
@@ -67,7 +68,13 @@ export function TrendChart({ data, line, height = 150 }: TrendChartProps) {
             {chartData.map((entry, index) => (
               <Cell 
                 key={`cell-${index}`} 
-                fill={entry.hit ? "rgba(34, 197, 94, 0.7)" : "rgba(248, 113, 113, 0.7)"} 
+                fill={
+                  entry.result === "hit"
+                    ? "rgba(34, 197, 94, 0.75)"
+                    : entry.result === "miss"
+                      ? "rgba(248, 113, 113, 0.75)"
+                      : "rgba(161, 161, 170, 0.65)"
+                }
               />
             ))}
           </Bar>

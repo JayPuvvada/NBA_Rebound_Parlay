@@ -10,8 +10,8 @@ function BouncingBasketball() {
       <div className="absolute w-48 h-48 bg-orange-500/20 rounded-full blur-3xl animate-pulse" />
       
       {/* Basketball */}
-      <div className="relative" style={{ animation: "bounce-ball 2s ease-in-out infinite" }}>
-        <svg width="160" height="160" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <div className="basketball-animation relative">
+        <svg aria-hidden="true" focusable="false" width="160" height="160" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <radialGradient id="ballGrad" cx="40%" cy="35%" r="60%">
               <stop offset="0%" stopColor="#f97316" />
@@ -35,26 +35,27 @@ function BouncingBasketball() {
       </div>
       
       {/* Shadow on floor */}
-      <div 
-        className="absolute bottom-8 w-32 h-4 bg-orange-500/10 rounded-full blur-sm"
-        style={{ animation: "shadow-pulse 2s ease-in-out infinite" }}
-      />
+      <div className="basketball-shadow-animation absolute bottom-8 h-4 w-32 rounded-full bg-orange-500/10 blur-sm" />
     </div>
   );
 }
 
-export function SplineSceneBasic() {
+interface HeroProps {
+  onViewEdge: () => void;
+}
+
+export function SplineSceneBasic({ onViewEdge }: HeroProps) {
   return (
-    <Card className="w-full h-[500px] bg-black/[0.96] relative overflow-hidden border-none rounded-none">
+    <Card className="relative w-full overflow-hidden rounded-none border-none bg-black/[0.96] md:h-[500px]">
       <Spotlight
         className="-top-40 left-0 md:left-60 md:-top-20"
         fill="white"
       />
       
-      <div className="flex h-full flex-col md:flex-row max-w-7xl mx-auto">
+      <div className="mx-auto flex min-h-[680px] max-w-7xl flex-col md:h-full md:min-h-0 md:flex-row">
         {/* Left content */}
         <div className="flex-1 p-8 relative z-10 flex flex-col justify-center">
-          <h1 className="text-4xl md:text-6xl font-extrabold bg-clip-text text-transparent bg-gradient-to-b from-neutral-50 to-neutral-500 tracking-tight">
+          <h1 className="bg-gradient-to-b from-neutral-50 to-neutral-500 bg-clip-text text-4xl font-extrabold tracking-tight text-transparent md:text-6xl">
             Dominate the Glass.
             <br/> Predict the Edge.
           </h1>
@@ -63,9 +64,10 @@ export function SplineSceneBasic() {
             modeling, Monte Carlo simulation, and live odds integration.
           </p>
           <div className="mt-8">
-             <button 
-               onClick={() => document.querySelector('#edge-section')?.scrollIntoView({ behavior: 'smooth' })}
-               className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full transition-colors duration-200"
+             <button
+               type="button"
+               onClick={onViewEdge}
+               className="rounded-full bg-emerald-500 px-8 py-3 font-bold text-white transition-colors duration-200 hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
              >
                View Daily Cheat Sheet
              </button>
@@ -73,7 +75,7 @@ export function SplineSceneBasic() {
         </div>
 
         {/* Right content - Basketball */}
-        <div className="flex-1 relative min-h-[300px] md:min-h-full">
+        <div className="relative min-h-[280px] flex-1 md:min-h-full">
           <BouncingBasketball />
         </div>
       </div>

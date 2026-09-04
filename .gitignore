@@ -11,3 +11,8 @@ node_modules/
 frontend/dist/
 *.log
 *.tsbuildinfo
+data/*.db
+.pytest_cache/
+.coverage
+htmlcov/
+frontend/node_modules/.tmp/
