@@ -56,12 +56,13 @@ export function SplineSceneBasic({ onViewEdge }: HeroProps) {
         {/* Left content */}
         <div className="flex-1 p-8 relative z-10 flex flex-col justify-center">
           <h1 className="bg-gradient-to-b from-neutral-50 to-neutral-500 bg-clip-text text-4xl font-extrabold tracking-tight text-transparent md:text-6xl">
-            Dominate the Glass.
-            <br/> Predict the Edge.
+            NBA rebounds.
+            <br/> A clearer bet check.
           </h1>
           <p className="mt-6 text-neutral-300 max-w-lg text-lg leading-relaxed">
-            Player rebound projections powered by matchup scouting, pace 
-            modeling, Monte Carlo simulation, and live odds integration.
+            Compare player rebound projections with the line and odds.
+            See model probabilities, expected return, and the warnings that
+            matter before you decide.
           </p>
           <div className="mt-8">
              <button
@@ -69,9 +70,13 @@ export function SplineSceneBasic({ onViewEdge }: HeroProps) {
                onClick={onViewEdge}
                className="rounded-full bg-emerald-500 px-8 py-3 font-bold text-white transition-colors duration-200 hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
              >
-               View Daily Cheat Sheet
+               Compare today's games
              </button>
           </div>
+          <p className="mt-4 max-w-lg text-xs leading-relaxed text-zinc-500">
+            Individual rebound props only. No parlay builder or bet placement.
+            Model estimates are not guaranteed results.
+          </p>
         </div>
 
         {/* Right content - Basketball */}

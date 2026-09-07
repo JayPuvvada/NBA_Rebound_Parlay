@@ -106,7 +106,7 @@ export function PredictForm() {
       if (payload.record_prediction) setLedgerToken("");
     } catch (requestError: unknown) {
       if (requestError instanceof ApiRequestError && requestError.kind === "aborted") return;
-      setError(requestError instanceof Error ? requestError.message : "Failed to run simulation.");
+      setError(requestError instanceof Error ? requestError.message : "Could not calculate this projection.");
     } finally {
       if (activeRequest.current === controller) {
         activeRequest.current = null;
@@ -168,7 +168,7 @@ export function PredictForm() {
       <Card className="w-full border-zinc-800 bg-zinc-950 text-zinc-100 shadow-2xl">
         <CardHeader className="border-b border-zinc-800 pb-5">
           <CardTitle className="flex items-center gap-2 text-xl font-bold">🏀 Player Lookup</CardTitle>
-          <p className="mt-1 text-sm text-zinc-400">Run a date-specific projection with optional market prices.</p>
+          <p className="mt-1 text-sm text-zinc-400">Check one player's rebounds. Enter your sportsbook's line and odds to compare both sides, or leave them blank for a projection only.</p>
         </CardHeader>
         <CardContent className="pt-5">
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -190,8 +190,9 @@ export function PredictForm() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label htmlFor="lookup-spread" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Player team spread</label>
+                <label htmlFor="lookup-spread" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Player team spread (optional)</label>
                 <input id="lookup-spread" type="number" value={spread} onChange={(event) => setSpread(event.target.value)} placeholder="-5.5" min="-40" max="40" step="0.5" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                <p className="mt-1 text-xs text-zinc-500">Negative = favored. Blank uses an even spread.</p>
               </div>
               <div>
                 <label htmlFor="lookup-line" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Rebound line</label>
@@ -203,26 +204,30 @@ export function PredictForm() {
               <legend className="mb-1 text-xs uppercase tracking-wider text-zinc-500">American odds by side (optional)</legend>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="lookup-over-odds" className="sr-only">Over odds</label>
+                  <label htmlFor="lookup-over-odds" className="mb-1 block text-xs text-zinc-400">Over odds</label>
                   <input id="lookup-over-odds" type="number" value={overOdds} onChange={(event) => updateOverOdds(event.target.value)} placeholder="Over -110" step="1" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
                 </div>
                 <div>
-                  <label htmlFor="lookup-under-odds" className="sr-only">Under odds</label>
+                  <label htmlFor="lookup-under-odds" className="mb-1 block text-xs text-zinc-400">Under odds</label>
                   <input id="lookup-under-odds" type="number" value={underOdds} onChange={(event) => updateUnderOdds(event.target.value)} placeholder="Under -110" step="1" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
                 </div>
               </div>
-              <p className="mt-1.5 text-xs text-zinc-600">Without a price, results are informational and do not claim a betting edge.</p>
+              <p className="mt-1.5 text-xs text-zinc-500">Enter either side or both, such as -110 or +120. These prices are entered by you, not fetched or verified here.</p>
             </fieldset>
 
-            <div>
+            <details className="rounded-lg border border-zinc-800 p-3">
+              <summary className="cursor-pointer text-sm font-medium text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Optional sportsbook label and matchup</summary>
+            <div className="mt-3">
               <label htmlFor="lookup-bookmaker" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Sportsbook / price source (optional)</label>
               <input id="lookup-bookmaker" type="text" value={bookmaker} onChange={(event) => setBookmaker(event.target.value)} maxLength={50} placeholder="e.g. FanDuel" autoComplete="off" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
             </div>
 
-            <div>
+            <div className="mt-3">
               <label htmlFor="lookup-matchup" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Matchup override (optional)</label>
               <input id="lookup-matchup" type="text" value={matchup} onChange={(event) => setMatchup(event.target.value)} maxLength={100} placeholder="e.g. Al Horford" autoComplete="off" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+              <p className="mt-1 text-xs text-zinc-500">Optional opposing player for matchup analysis, not a confirmed defensive assignment.</p>
             </div>
+            </details>
 
             <fieldset>
               <legend className="mb-1 text-xs uppercase tracking-wider text-zinc-500">Venue</legend>
@@ -236,7 +241,9 @@ export function PredictForm() {
               {venue === "auto" && <p className="mt-1.5 text-xs text-zinc-600">If the schedule cannot verify this exact opponent and date, choose Home or Away explicitly.</p>}
             </fieldset>
 
-            <label className={`flex items-start gap-3 rounded-md border p-3 text-sm ${canRecord ? "cursor-pointer border-zinc-700 bg-zinc-900/50 text-zinc-300" : "cursor-not-allowed border-zinc-800 bg-zinc-950 text-zinc-600"}`}>
+            <details className="rounded-lg border border-zinc-800 p-3">
+              <summary className="cursor-pointer text-sm font-medium text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Optional performance tracking{recordPrediction ? " · saving requested" : ""}</summary>
+            <label className={`mt-3 flex items-start gap-3 rounded-md border p-3 text-sm ${canRecord ? "cursor-pointer border-zinc-700 bg-zinc-900/50 text-zinc-300" : "cursor-not-allowed border-zinc-800 bg-zinc-950 text-zinc-600"}`}>
               <input
                 type="checkbox"
                 checked={recordPrediction}
@@ -245,8 +252,8 @@ export function PredictForm() {
                 className="mt-0.5 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-emerald-600 focus:ring-emerald-500"
               />
               <span>
-                <span className="block font-semibold">Save actionable pick to evaluation ledger</span>
-                <span className="mt-0.5 block text-xs text-zinc-500">Unchecked by default. Requires a line and at least one side-specific price; the server saves only eligible picks.</span>
+                <span className="block font-semibold">Save a qualifying model pick</span>
+                <span className="mt-0.5 block text-xs text-zinc-500">For later performance review, not bet placement. Requires a line, a price, and the server's write token.</span>
               </span>
             </label>
 
@@ -258,7 +265,6 @@ export function PredictForm() {
                   type="password"
                   value={ledgerToken}
                   onChange={(event) => setLedgerToken(event.target.value)}
-                  required={recordPrediction}
                   autoComplete="off"
                   autoCapitalize="none"
                   spellCheck={false}
@@ -269,10 +275,11 @@ export function PredictForm() {
                 <p id="lookup-ledger-token-note" className="mt-1.5 text-xs text-zinc-500">Sent only as the X-Ledger-Write-Token header for this request. It is never included in the JSON body or browser storage.</p>
               </div>
             )}
+            </details>
 
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="submit" disabled={loading} className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 py-3 font-bold text-white transition-colors duration-200 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">
-                {loading ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Simulating…</> : "Run simulation"}
+                {loading ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Calculating…</> : "Check rebound prop"}
               </button>
               {loading && <button type="button" onClick={cancel} className="rounded-lg border border-zinc-700 px-4 py-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400">Cancel</button>}
             </div>

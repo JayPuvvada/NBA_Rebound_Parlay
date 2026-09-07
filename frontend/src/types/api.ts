@@ -137,6 +137,7 @@ export interface ProjectionBase {
 }
 
 export interface DataFreshness {
+  projection_inputs?: ProjectionSource | null;
   generated_at?: string | null;
   source?: string | null;
   as_of_date?: string | null;
@@ -163,6 +164,7 @@ export interface InjuryDataFreshness {
 }
 
 export interface ProjectionMetadata {
+  projection_inputs?: ProjectionSource | null;
   as_of_date?: string | null;
   data_cutoff?: string | null;
   historical_mode?: boolean;
@@ -192,6 +194,12 @@ export interface ScheduleVerification {
   game_id?: string | null;
   status?: number | string | null;
   status_text?: string | null;
+}
+
+export interface ProjectionSource {
+  status?: string;
+  source?: string;
+  limitations?: string[];
 }
 
 export interface MarketQuote {

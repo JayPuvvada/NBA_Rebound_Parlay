@@ -3,7 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { PlayerDetailPanel } from "@/components/ui/PlayerDetailPanel";
 import { Loader2 } from "lucide-react";
 import { ApiRequestError, fetchJson, unwrapCheatSheet } from "@/lib/api";
-import { easternToday, formatAmericanOdds, formatSignedPercent, formatTimestamp } from "@/lib/format";
+import { easternToday, formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
+import { bettingView } from "@/lib/betting";
 import type { CheatRow, CheatSheetOddsStatus, CheatSheetResponse, Game, GamesResponse } from "@/types/api";
 
 const BOOKMAKERS = [
@@ -15,24 +16,6 @@ const BOOKMAKERS = [
 function requestMessage(error: unknown, fallback: string): string {
   if (error instanceof Error) return error.message;
   return fallback;
-}
-
-function tierClass(row: CheatRow): string {
-  const color = row.tier_color;
-  if (color === "green") return "text-emerald-400";
-  if (color === "blue") return "text-blue-400";
-  if (color === "purple") return "text-purple-400";
-  if (color === "yellow") return "text-yellow-400";
-  if (color === "red") return "text-red-400";
-  if (color === "gray") return "text-zinc-400";
-
-  const tier = row.tier || "";
-  if (tier.includes("STRONG")) return "text-emerald-400";
-  if (tier.includes("PLAY") && !tier.includes("SAFE")) return "text-green-400";
-  if (tier.includes("SAFE")) return "text-blue-400";
-  if (tier.includes("LEAN")) return "text-purple-400";
-  if (tier.includes("AVOID")) return "text-red-400";
-  return "text-zinc-500";
 }
 
 function detailId(row: CheatRow): string {
@@ -50,6 +33,7 @@ export function CheatSheet() {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingGames, setLoadingGames] = useState(false);
+  const [emptySchedule, setEmptySchedule] = useState<string | null>(null);
   const [gamesError, setGamesError] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -63,12 +47,13 @@ export function CheatSheet() {
       setLoadingGames(true);
       setGames([]);
       setGamesError(null);
+      setEmptySchedule(null);
       try {
         const query = new URLSearchParams({ date });
         const response = await fetchJson<GamesResponse>(`/games?${query.toString()}`, { signal: controller.signal }, { timeoutMs: 30_000 });
         if (!Array.isArray(response.games)) throw new Error("The games response had an unexpected shape.");
         setGames(response.games);
-        if (response.games.length === 0) setGamesError(response.message || `No NBA games found for ${date}.`);
+        if (response.games.length === 0) setEmptySchedule(response.message || `No NBA games found for ${date}.`);
       } catch (error: unknown) {
         if (error instanceof ApiRequestError && error.kind === "aborted") return;
         setGamesError(requestMessage(error, "Failed to fetch the NBA schedule."));
@@ -138,6 +123,8 @@ export function CheatSheet() {
     const isExpanded = expandedKey === key;
     const line = typeof projection.line === "number" ? projection.line : null;
     const panelId = detailId(projection);
+    const { eligible, direction } = bettingView(projection, projection);
+    const showReturn = eligible && projection.tier !== "STALE_ODDS" && projection.american_odds != null;
 
     return (
       <Fragment key={key}>
@@ -157,32 +144,28 @@ export function CheatSheet() {
           <td className="px-4 py-3 text-zinc-300">
             <span aria-hidden="true">{projection.team === selectedGame?.home ? "🏠" : "✈️"}</span>{" "}{projection.team || "—"}
           </td>
-          <td className="px-4 py-3 text-sm text-zinc-400">
-            vs {projection.opponent}
-            {projection.rest_note && <span className="ml-1 text-xs text-zinc-600">({projection.rest_note})</span>}
-          </td>
           <td className="px-4 py-3 text-right font-mono font-bold text-indigo-300">{projection.projection}</td>
           <td className="px-4 py-3 text-right">
             {line !== null ? (
               <div>
                 <div>{line}</div>
-                <div className="text-xs text-zinc-500">{formatAmericanOdds(projection.american_odds)}{projection.bookmaker ? ` · ${projection.bookmaker}` : ""}</div>
+                <div className="text-xs text-zinc-500">{projection.evaluated_side ?? projection.odds_side ?? direction} {formatAmericanOdds(projection.american_odds)}{projection.bookmaker ? ` · ${projection.bookmaker}` : ""}</div>
               </div>
             ) : <span className="text-zinc-600">—</span>}
           </td>
           <td className="px-4 py-3">
-            {projection.direction ? (
-              <span className={`rounded border px-2 py-0.5 text-xs font-bold ${projection.direction === "OVER" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400" : "border-red-500/20 bg-red-500/10 text-red-400"}`}>
-                {projection.direction}
+            {direction ? (
+              <span className={`rounded border px-2 py-0.5 text-xs font-bold ${direction === "OVER" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400" : "border-red-500/20 bg-red-500/10 text-red-400"}`}>
+                {direction}
               </span>
             ) : <span className="whitespace-nowrap text-xs font-semibold text-zinc-500">NO BET</span>}
           </td>
-          <td className="px-4 py-3 text-right font-mono text-sm text-yellow-400">{formatSignedPercent(projection.ev_roi)}</td>
-          <td className={`px-4 py-3 text-sm font-semibold ${tierClass(projection)}`}>{projection.tier || "Info"}</td>
+          <td className="px-4 py-3 text-right font-mono text-sm text-zinc-300">{formatPercent(direction ? projection.confidence : null)}</td>
+          <td className="px-4 py-3 text-right font-mono text-sm text-yellow-400">{formatSignedPercent(showReturn ? projection.ev_roi : null)}</td>
         </tr>
         {isExpanded && (
           <tr>
-            <td colSpan={8} className="p-0"><PlayerDetailPanel player={projection} id={panelId} /></td>
+            <td colSpan={7} className="p-0"><PlayerDetailPanel player={projection} id={panelId} /></td>
           </tr>
         )}
       </Fragment>
@@ -194,20 +177,19 @@ export function CheatSheet() {
       <div className="mb-6">
         <div className="mb-3 flex items-center gap-2 px-1">
           <span className="text-lg" aria-hidden="true">🏆</span>
-          <h3 className="text-base font-bold text-white">Best edges</h3>
-          <span className="text-xs text-zinc-500">actionable picks first, then EV and confidence</span>
+          <h3 className="text-base font-bold text-white">Rebound props</h3>
+          <span className="text-xs text-zinc-500">qualifying picks first</span>
         </div>
-        <table className="w-full min-w-[920px] text-left text-sm">
+        <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-zinc-900/50 text-xs uppercase text-zinc-400">
             <tr>
               <th scope="col" className="rounded-tl-md px-4 py-2.5">Player</th>
               <th scope="col" className="px-4 py-2.5">Team</th>
-              <th scope="col" className="px-4 py-2.5">Matchup</th>
-              <th scope="col" className="px-4 py-2.5 text-right">Proj</th>
+              <th scope="col" className="px-4 py-2.5 text-right">Projection</th>
               <th scope="col" className="px-4 py-2.5 text-right">Line / price</th>
-              <th scope="col" className="px-4 py-2.5">Dir</th>
-              <th scope="col" className="px-4 py-2.5 text-right">EV ROI</th>
-              <th scope="col" className="rounded-tr-md px-4 py-2.5">Tier</th>
+              <th scope="col" className="px-4 py-2.5">Model pick</th>
+              <th scope="col" className="px-4 py-2.5 text-right">Pick win %</th>
+              <th scope="col" className="rounded-tr-md px-4 py-2.5 text-right">Expected return</th>
             </tr>
           </thead>
           <tbody>{players.map(renderPlayerRow)}</tbody>
@@ -223,8 +205,8 @@ export function CheatSheet() {
       <CardHeader className="border-b border-zinc-800 pb-6">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
           <div>
-            <CardTitle className="flex items-center gap-2 text-2xl font-bold">🔥 Daily Edge Generator</CardTitle>
-            <CardDescription className="mt-1 text-zinc-400">Choose a game, then expand a player for probabilities, price, factors, injuries, and trend.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-2xl font-bold">Daily Edge · Rebound Props</CardTitle>
+            <CardDescription className="mt-1 text-zinc-400">Choose a game and sportsbook. Compare rebound lines, then expand a player for both sides and key risks.</CardDescription>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
             <div>
@@ -264,15 +246,17 @@ export function CheatSheet() {
           </div>
         )}
 
-        {!selectedGame && !gamesError && !loadingGames && (
+        {emptySchedule && !selectedGame && !loadingGames && <p className="rounded-lg border border-zinc-800 p-4 text-sm text-zinc-400" role="status">{emptySchedule} Choose another date.</p>}
+
+        {!selectedGame && !gamesError && !emptySchedule && !loadingGames && (
           <div className="flex h-64 w-full flex-col items-center justify-center text-zinc-500"><span className="mb-3 text-4xl" aria-hidden="true">📊</span><p>Select a game above to see projections.</p></div>
         )}
 
         {loading ? (
-          <div className="flex h-64 w-full flex-col items-center justify-center text-center text-zinc-400" role="status"><Loader2 className="mb-4 h-8 w-8 animate-spin text-emerald-500" aria-hidden="true" /><p>Pulling market and player data, then simulating outcomes…</p><p className="mt-2 text-xs text-zinc-600">The first load can take up to 90 seconds.</p></div>
+          <div className="flex h-64 w-full flex-col items-center justify-center text-center text-zinc-400" role="status"><Loader2 className="mb-4 h-8 w-8 animate-spin text-emerald-500" aria-hidden="true" /><p>Loading player data and available sportsbook prices…</p><p className="mt-2 text-xs text-zinc-600">First loads can be slow. Availability depends on the data providers.</p></div>
         ) : sheetError ? (
           <div className="rounded-md border border-red-900/50 bg-red-950/20 p-4 text-red-400" role="alert">
-            <p className="font-semibold">Edge data unavailable</p><p className="mt-1 text-sm">{sheetError}</p>
+            <p className="font-semibold">Projections unavailable</p><p className="mt-1 text-sm">{sheetError}</p>
             <button type="button" onClick={() => setSheetRetry((value) => value + 1)} className="mt-3 rounded bg-red-900/30 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-900/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400">Retry projections</button>
           </div>
         ) : data && data.length > 0 && selectedGame ? (
@@ -280,7 +264,7 @@ export function CheatSheet() {
             {renderedGeneratedAt && <p className="mb-3 text-right text-xs text-zinc-600">Generated <time dateTime={generatedAt || undefined}>{renderedGeneratedAt}</time></p>}
             {oddsStatus?.error && (
               <div className="mb-4 rounded-md border border-yellow-900/40 bg-yellow-950/20 p-3 text-sm text-yellow-300" role="status">
-                <strong>Live prices unavailable.</strong> {oddsStatus.error} Projections below are informational where no line is shown.
+                <strong>Sportsbook prices unavailable.</strong> {oddsStatus.error} Projections below are informational where no line is shown.
               </div>
             )}
             {warnings.map((warning) => (
@@ -288,10 +272,11 @@ export function CheatSheet() {
                 <strong>Projection warning.</strong> {warning}
               </div>
             ))}
-            {data.every((row) => typeof row.line !== "number") && (
-              <div className="mb-4 rounded-md border border-yellow-900/40 bg-yellow-950/20 p-3 text-sm text-yellow-400/80">⏳ <strong>Sportsbook lines are not available.</strong> Projections remain informational until side-specific prices arrive.</div>
+            {!oddsStatus?.error && data.every((row) => typeof row.line !== "number") && (
+              <div className="mb-4 rounded-md border border-yellow-900/40 bg-yellow-950/20 p-3 text-sm text-yellow-400/80">⏳ <strong>Sportsbook lines are not available.</strong> These are projection-only results. Recheck later or enter your own odds in Player Lookup.</div>
             )}
             {renderRankedTable(data)}
+            <p className="text-xs leading-relaxed text-zinc-500">Expected return is model-estimated net return per amount staked, not a guaranteed profit. NO BET means no qualifying recommendation; expand the player for the reason. Prices are a snapshot, not a live ticker.</p>
           </div>
         ) : selectedGame && data && data.length === 0 ? (
           <div className="flex h-64 w-full items-center justify-center text-zinc-500">No projection data is available for this game.</div>

@@ -11,9 +11,10 @@ multi-leg probabilities, place bets, or connect to your sportsbook account.
 Its projections and recommendation tiers are heuristic model outputs, not
 guarantees of accuracy or profit.
 
-**Documentation snapshot:** September 5, 2026, reviewing application code at
-`0f0b903`. This README update changes documentation only. The verification
-section separates previous test results from things that remain unverified.
+**Updated:** September 7, 2026. The interface now focuses on the betting decision,
+with a shared compact results panel. Model calculations and backend API contracts
+are unchanged by this display update. The September 5 change audit below remains
+anchored to `0f0b903`; newer display changes are listed separately.
 
 ## Contents
 
@@ -52,14 +53,14 @@ Home / landing section
 
 ### Landing section
 
-The headline is “Dominate the Glass. Predict the Edge.” The basketball is an
+The headline is “NBA rebounds. A clearer bet check.” The basketball is an
 animated SVG with lighting/shadow effects; it is not a live visualization of
 model data. The component still has the historical name `SplineSceneBasic`,
 but the displayed basketball is code-rendered SVG.
 
-“View Daily Cheat Sheet” selects Daily Edge and scrolls to the tools. The hero
-mentions Monte Carlo simulation; the current backend also calculates market
-probabilities and intervals **exactly** from its fitted distribution.
+“Compare today\'s games” selects Daily Edge and scrolls to the tools. The copy
+describes individual rebound props, probabilities, expected return, and warnings.
+It explicitly states there is no parlay builder or bet placement.
 
 ### Navigation and accessibility
 
@@ -102,16 +103,15 @@ stats or projection errors can be omitted; a partial-slate warning indicates
 that some projections failed. A complete pipeline failure is reported as an
 error rather than being disguised as an ordinary empty table.
 
-### “Best edges” table
+### Rebound props table
 
 | Column | Meaning |
 | --- | --- |
 | Player | Player name and expand/collapse control. |
 | Team | Team abbreviation; house/plane icon indicates home/away. |
-| Matchup | Opponent and an optional rest/back-to-back note. |
-| Proj | Expected rebound total, not a guaranteed outcome or ceiling. |
+| Projection | Expected rebound total, not a guaranteed outcome or ceiling. |
 | Line / price | Evaluated rebound line, American odds, and available book label. |
-| Dir | An actionable `OVER` or `UNDER`; otherwise `NO BET`. |
+| Model pick | An actionable `OVER` or `UNDER`; otherwise `NO BET`. |
 | EV ROI | Model-expected net return per unit staked at that side's price. |
 | Tier | Recommendation strength or the reason the row is informational. |
 
@@ -146,17 +146,16 @@ not fetch a new live quote or save a pick.
 ### Loading, errors, and refresh
 
 Schedule requests time out in the browser after 30 seconds; sheet requests
-after 110 seconds. The loading copy says a first load can take up to 90 seconds,
-but that is an estimate, not a performance guarantee.
+after 110 seconds. Loading copy warns that first loads may be slow and depend on data providers;
+it no longer promises a specific completion time.
 
 There are separate “Retry schedule” and “Retry projections” controls.
 Changing date/game/book aborts obsolete browser requests to avoid displaying
 the wrong response. There is no periodic live refresh or background polling.
 
 Warnings distinguish unavailable prices, partial projections, stale quotes,
-and non-pregame games. One current UI quirk: a valid date with **no games** is
-displayed in the same “Schedule unavailable” panel as a failed schedule request.
-Read the accompanying message to distinguish those cases.
+and non-pregame games. A successful empty schedule now gets a neutral “No games”
+message and a suggestion to choose another date, rather than an outage alert.
 
 ## 3. Player Lookup
 
@@ -202,7 +201,11 @@ because the opponent roster cannot be verified.
 
 ### Run, cancel, retry, and save
 
-“Run simulation” validates the form, clears the previous result, and sends
+Sportsbook labeling and matchup override are inside “Optional sportsbook label
+and matchup.” Saving/token controls are inside “Optional performance tracking.”
+Opening these sections does not enable saving; the checkbox remains opt-in.
+
+“Check rebound prop” validates the form, clears the previous result, and sends
 `POST /predict`. A spinner and Cancel button appear during the request.
 
 Cancel stops the browser waiting; it does not guarantee Flask has stopped
@@ -233,163 +236,89 @@ historical injury/roster/market dataset.
 
 ## 4. Results and shared feature panels
 
-Player Lookup displays a full result card. Daily Edge exposes many of the
-same components inside each expandable player row.
+Player Lookup and expanded Daily Edge rows use the same
+[BettingAnalysis component](frontend/src/components/ui/BettingAnalysis.tsx).
 
-### Identity, projection, and provenance
+### What stays on screen
 
-The header identifies the player, team/opponent, venue or matchup context,
-and expected rebounds. Player Lookup also shows model version and generation
-time where supplied.
+- **Projected rebounds:** the expected total, with player, opponent, game date,
+  venue, and projection-generation time.
+- **Model recommendation:** the backend's qualifying side, line, and price,
+  or NO BET with a short explanation. A frontend guard cannot invent a pick
+  from a high probability or positive return.
+- **Both sides:** Over and Under each show their own line, price, model win
+  probability, and expected return when usable. Missing prices stay missing.
+- **Push probability:** shown for integer lines only, where exact equality can
+  return the stake. Half-point lines omit this otherwise zero-value metric.
+- **Central 68% rebound range:** one compact outcome range, with an explicit
+  warning that results can fall outside it.
+- **Projected minutes:** a useful indication of the workload assumed by the model.
+- **Risk notes:** high variability, spread-related minutes risk, and injury/data
+  limitations remain visible.
+- **Recent appearances:** up to ten game totals, oldest to newest, compared
+  with the recommended side at the shown line.
+- **Injury reports:** roster lists are expandable; important injury impact and
+  freshness warnings remain outside the collapsed section.
 
-“Data freshness” reports available season, cutoff, injury source/status, entry
-count, and timestamps. A response-generation time is not necessarily a
-source-update time. A yellow warning indicates stale/ineligible data; a green
-or neutral display is not an external accuracy certification.
+The selected game already supplies matchup context in Daily Edge, so the table
+does not repeat an opponent column for every player.
 
-The API carries projection-source metadata. Fallback explanations appear in
-the limitations/context panel; not every source field has its own UI badge.
+### Metrics removed from the betting interface
 
-### Recommendation banner
+Duplicate Confidence, probability edge, implied probability, Kelly sizing,
+weighted hit rate, raw Fano values, the 95% interval, interval coverage/method
+labels, model IDs, recency weights, raw factor multipliers, and duplicate DvP
+aliases are no longer shown in the active result views.
 
-With a line, the banner shows either `OVER/UNDER [line]` and a tier, or
-`NO BET` and the evaluated line/tier.
+The long rule-generated narrative is also no longer rendered. This avoids
+repeating the displayed numbers and old wording implying “safe” outcomes.
+These fields and the underlying backend calculations remain available in the
+API for debugging/evaluation; this change does not retune the model.
 
-**Evaluated side** and **recommended direction** are different. An Over price
-can be analyzed without recommending Over. A higher point projection than
-the line does not automatically imply a profitable Over.
+### Reading the remaining numbers
 
-### Probability and pricing glossary
+**Model win probability** is the chance of strictly beating that side's line
+under the fitted rebound distribution. It is not confidence in the software
+or a verified historical success rate.
 
-| Display | Interpretation |
-| --- | --- |
-| Over | Probability the rebound total is strictly greater than the line. |
-| Under | Probability it is strictly below the line. |
-| Push | Probability of exactly matching an integer line; the modeled stake is returned. Half-point lines cannot push. |
-| Confidence | Model win probability for the selected/evaluated side, not confidence that the entire app is correct. |
-| Implied probability | Break-even win probability implied by the offered price before adjusting for possible pushes. It includes the offered price's margin; this is not a no-vig consensus estimate. |
-| Probability edge | Model win probability minus the push-adjusted break-even probability. A displayed +5% is a five-percentage-point difference, not +5% expected return. |
-| EV ROI | Expected net profit per unit staked under the fitted probabilities and entered quote. It is not realized performance. |
-| Kelly | Quarter-Kelly calculation expressed as a bankroll fraction. It is not a bet placement or a guaranteed-safe stake. |
-| Recent hit rate | Recency-weighted past results against this line and side, not against each historical game's original sportsbook line. |
+**Expected return** is model-estimated net profit per amount staked at that
+specific price. For example, an API fraction of 0.08 displays as +8%. It is not
+a guaranteed profit, and a positive number alone does not constitute a pick.
+NO BET can still appear when a priced signal fails the evidence thresholds.
 
-With win probability `p_win`, push probability `p_push`, and net decimal
-profit `b` per unit on a win, the implementation uses:
+Return estimates are hidden when eligibility is unverified, explicitly
+negative, or projection sources are degraded, and for stale-quote results.
+Probabilities remain visible for diagnostic analysis, alongside the warnings.
+Conflicting safety flags are resolved conservatively for display.
 
-```text
-p_loss = 1 - p_win - p_push
-EV ROI = p_win × b - p_loss
-break-even win probability = implied probability × (1 - p_push)
-probability edge = p_win - break-even win probability
-```
+**The 68% range** describes an outcome interval from the fitted distribution,
+not a guaranteed floor/ceiling and not historical calibration coverage.
+The backend still computes its exact 68% and 95% intervals.
 
-The API sends fractions: `0.61` becomes 61%, `0.08` EV becomes +8%,
-and `0.02` Kelly becomes 2%. Missing values display as unavailable, not zero.
+### Quote provenance and missing data
 
-When no price exists, EV/edge are absent and Kelly is zero. Eligibility
-downgrades zero Kelly. Some other non-actionable priced evaluations may still
-display a mathematical Kelly value; the **direction/actionable flag and
-limitations**, not that number alone, determine whether a pick exists.
+Manual Lookup prices are labeled “Manually entered · not independently
+verified.” A projection-generation time is never labeled as a sportsbook
+update by the new panel.
 
-### Side-by-side pricing
+Daily Edge shows a quote-update timestamp if supplied, otherwise says it is
+unavailable. Provider/fetch-time limitations described in section 7 still apply.
+Distinct Over/Under lines retain their own side-specific evaluations; the UI
+does not substitute the selected line's probability for a different line.
 
-Available Over/Under cards show the individual price, win probability,
-probability edge, EV, and tier. The actionable selected side is highlighted.
-A side with no supplied price is not silently assigned the other side's odds.
+The player header is labeled “Projection generated,” separate from quote time.
+Injury information shows a compact report-status/timestamp note. Stale injury
+warnings remain explicit even when the backend's bounded stale policy permits
+the result. An empty injury list says that it does not confirm a healthy roster.
 
-### Prediction intervals and range
+### Recent games and tracking feedback
 
-With line analysis, the app displays central 68% and 95% prediction intervals
-and their coverage under the fitted distribution. Without a line, Player
-Lookup shows the central 68% range. Daily Edge details also show a range.
+Chart colors represent wins/losses against the recommended side, not necessarily
+the Over. Without a recommended side, bars stay neutral. Previous totals are
+not portrayed as a forecast or an independent measure of edge.
 
-These are intervals for a future rebound **outcome**, not uncertainty bounds
-around the mean. Rebounds are integer-valued, so actual distribution coverage
-can differ from the nominal 68% or 95%. Although some UI labels say
-“simulated coverage,” the current calculation is exact distribution coverage,
-not measured historical backtest coverage.
-
-### Variance notice
-
-The notice explains whether spread/uncertainty came from player observations
-or a heuristic estimate, with sample size where available.
-
-The Fano factor is variance divided by mean. A larger value generally means
-more variable rebound totals. Empirical variance is blended toward a prior,
-so “player data” does not mean an entirely unadjusted empirical distribution.
-A sufficiently high raw empirical Fano factor triggers extra caution and caps
-the recommendation at a high-variance lean.
-
-### Recent-games chart
-
-Up to ten appearances are plotted oldest to newest. Bars show rebounds;
-hovering reveals the opponent/date. A dashed line marks the entered/evaluated
-threshold.
-
-Green means a hit for the **recommended side**, red a miss, and gray a push
-or neutral/unpriced comparison. Under charts correctly treat totals below the
-line as hits. With no actionable direction, bars remain neutral rather than
-implying a recommendation.
-
-The recent hit rate weights newer games more and excludes pushes from its
-denominator. Its displayed game count still includes valid push observations.
-
-### Model insights
-
-The narrative explains the recommendation and selected factors such as pace,
-matchup, injuries, and recent form. It is generated by local Python rules and
-templates—not an OpenAI/LLM request. Running a projection does not itself
-consume OpenAI tokens, although external data services may have their own costs.
-
-The frontend renders paragraphs and bold emphasis as React text rather than
-injecting raw HTML. Some existing narrative phrases about “safe” floors are
-stronger than the evidence supports; they should not be read as guarantees.
-
-Player Lookup currently attaches the narrative on the line-analysis path;
-a no-line response need not include it.
-
-### Model data context and limitations
-
-The expandable context block can show:
-
-- Schedule verification, game ID/status, and team identity.
-- Historical versus current/future mode.
-- Whether live injuries were used.
-- Statistical cutoff and team-assignment source.
-- Rate/variance sample sizes and chronological trend order.
-- Season/recent/opponent-history weights and model baselines.
-- Whether opponent data is team-level rather than position-specific.
-
-“Analysis only — not eligible for a live pick” is an intentional safety state,
-not necessarily a failed calculation. Read all limitations; a numerical
-projection can be returned despite incomplete information.
-
-### Factor breakdown
-
-| Factor | Meaning |
-| --- | --- |
-| Base Minutes | Workload estimate after applicable role/injury changes, before blowout damping. |
-| Proj Minutes | Minutes used for the rebound projection after spread-related damping. |
-| Base Rebs | Blended rebounds-per-minute rate multiplied by projected minutes. |
-| Pace | Adjustment relative to the player's own team-pace baseline. |
-| Opp / Miss Matchup | Two labels for the same miss-opportunity adjustment. |
-| DvP / Opp Rebound Environment | Legacy/current labels for the same **team-level** opponent rebound adjustment, not actual position-level DvP. |
-| Matchup | Bounded individual-opponent scouting adjustment. |
-| Raw Mult | Combined environment/venue/rest multiplier before final shrinkage and bounds. |
-| Env Mult (Final) | Final bounded adjustment, including available lineup competition effects. |
-| Blowout | None, Slight, or High based on spread/workload rules. |
-| DNP Rate | Observed zero-minute rows when the source provides them; not a complete probability of sitting out. |
-
-Multiplier values near 1.00 are neutral; above/below one increase/decrease
-the baseline. Some factors receive labels such as Favorable or Difficult.
-Do not multiply duplicate alias rows together.
-
-### Injury panels
-
-Team and opponent injury lists accompany matchup/teammate impact alerts.
-“No injuries reported” or an empty list does **not** prove everyone is
-healthy: data can be unavailable, excluded for historical dates, or incomplete.
-Always read the freshness and limitations panels alongside the list.
+When saving was requested, Player Lookup preserves the success/failure reason
+and clarifies that recording a model pick does not place a bet.
 
 ## 5. How the projection works
 
@@ -755,6 +684,20 @@ A normal push failed because local `main` was one commit ahead and one behind.
 The repair merged the histories, resolved conflicts in favor of the newer
 amended files, and pushed normally without force-pushing.
 
+### E. September 7 interface simplification
+
+- Added one shared betting-analysis panel for Lookup and Daily Edge.
+- Kept projection, price/line, side probabilities, modeled return, one range,
+  minutes, recent games, and material risk warnings.
+- Removed repeated/technical metrics and the long generated narrative from
+  active views; backend formulas and responses are unchanged.
+- Replaced tier-code clutter with a plain recommendation/NO BET explanation.
+- Preserved side-specific prices/lines and conservative display eligibility.
+- Collapsed optional form controls and injury lists, while retaining warnings.
+- Rewrote the hero, browser title, form action, loading copy, and empty schedule
+  state to match an individual rebound-prop comparison tool.
+- Added 12 automated frontend display/contract tests (`npm test`).
+
 ### A. Model and recommendation corrections
 
 - Kept the model mean independent of the sportsbook line.
@@ -1073,7 +1016,7 @@ runtime schema validator for every upstream field.
 
 ### What was previously checked
 
-Before this documentation task, the recorded local verification reported:
+Before the September 7 interface simplification, the recorded local verification reported:
 
 - **184 backend tests passed.**
 - Frontend lint, TypeScript checking, and production build passed during the
@@ -1088,10 +1031,11 @@ Before this documentation task, the recorded local verification reported:
 - The GitHub push repair succeeded, with local and remote main synchronized
   at `0f0b903` before this README edit.
 
-These are historical check results, **not newly rerun tests, a live status
-monitor, or proof that every feature works**. This documentation task inspects
-source/history and changes README only; it does not run paid/live data calls,
-restart services, alter model code, or deploy anything.
+Those backend/live results are historical, not a live status monitor or proof
+that every feature works. The September 7 display change passed its 12 new
+frontend tests, lint, TypeScript checks, and production build. Browser smoke
+checks use a separate mock-data preview, without NBA/odds calls. No backend
+model code, real ledger data, or deployment was changed.
 
 ### Reproducing automated checks
 
@@ -1099,15 +1043,18 @@ restart services, alter model code, or deploy anything.
 python3 -m unittest discover -s tests -v
 
 cd frontend
+npm test
 npm run lint
 npm run typecheck
 npm run build
 ```
 
 The frontend build script itself includes lint and TypeScript checking.
-The repository does not currently configure a dedicated browser end-to-end
-or frontend unit-test suite in `package.json`; build/type checks are not
-equivalent to testing every browser interaction.
+The September 7 update adds 12 frontend tests using Node\'s test runner and
+React server rendering via Vite. Run `npm test` in `frontend/`. These check
+price/line pairing, reduced metrics, missing data, source/eligibility guards,
+pushes, warnings, and both result entry points. They are not a full browser
+end-to-end suite or a live-provider check.
 
 Use the scoped `tests/` command. Standalone `test_predict.py`,
 `test_predict_local.py`, and `test_proxies.py` have direct-execution guards.
@@ -1130,8 +1077,9 @@ all root `test_*.py` files or share their raw output.
   limit Daily Edge freshness assurance.
 - Individual matchup assignment is inferred, and some unavailable optional
   scouting data is silently neutralized rather than independently verified.
-- “NO BET” may still accompany diagnostic numeric EV/Kelly values; positive
-  numbers alone are not the actionability contract.
+- “NO BET” can accompany a diagnostic expected return for a usable quote;
+  positive numbers alone are not the actionability contract. Kelly remains
+  in the API but is no longer displayed.
 - Canceling a browser request does not cancel every backend side effect.
 - A green process-health response or successful Git push does not prove
   deployment, upstream connectivity, browser behavior, or prediction accuracy.
@@ -1142,7 +1090,7 @@ all root `test_*.py` files or share their raw output.
 | --- | --- |
 | “NBA Stats could not be reached” | Primary data and the required supported fallback path could not supply the request. Check host connectivity/proxy and logs; do not assume a worldwide outage. |
 | Retry still uses ESPN | The primary circuit/fallback caches may still be inside their five-minute window. Recovery happens on a subsequent uncached request, not a background ping. |
-| No games shown | It may be a genuine off-day/offseason date. Read the message; the current UI shares the schedule-error panel with empty schedules. |
+| No games shown | It may be a genuine off-day/offseason date. A valid empty schedule has a neutral message; provider failures have an error/retry panel. |
 | Auto venue fails | The exact opponent/date was not verified. An explicit venue can permit analysis only, not bypass live-pick eligibility. |
 | Selected venue rejected | Available schedule evidence contradicts the chosen Home/Away value. |
 | Daily Edge unavailable while Lookup works | Batch roster/advanced-data requirements are broader than the supported manual fallback. |

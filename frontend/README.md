@@ -19,6 +19,7 @@ Vite proxies `/games`, `/cheat-sheet`, and `/predict` to Flask at `http://127.0.
 ## Checks and build
 
 ```bash
+npm test
 npm run lint
 npm run typecheck
 npm run build
@@ -39,3 +40,23 @@ Player Lookup sends side-specific `over_odds` and `under_odds`. If no odds are s
 - `POST /predict` accepts `player`, `opponent`, `date`, nullable `line`, nullable `over_odds`/`under_odds`, nullable `bookmaker`/`matchup`/`home_game`, numeric `spread`, and Boolean `record_prediction`.
 
 Both projection payloads use nullable `direction`: `OVER` or `UNDER` means an actionable positive-EV selection, while `null` means **NO BET**. `evaluated_side`/`odds_side` identifies pricing context and is never treated as a recommendation. Manual recording metadata is `{ requested, recorded, prediction_id, reason }`.
+
+## Betting-focused display (September 7)
+
+Both result views use `BettingAnalysis.tsx`: projection, recommendation or NO BET,
+side-specific line/price/probability/expected return, integer-line push chance,
+one 68% range, projected minutes, recent appearances, and material risk warnings.
+Injury lists and optional form controls are expandable.
+
+The active UI no longer renders duplicate confidence, Kelly, Fano values,
+probability edge, implied probability, weighted hit rate, 95% ranges, raw factor
+multipliers, internal model metadata, or the long rule-generated narrative.
+Backend fields and calculations are unchanged.
+
+Manual prices are explicitly unverified. Expected returns are hidden for
+unverified/degraded eligibility or stale quotes. All reported limitations and
+injury freshness warnings remain visible. A projection timestamp is not a
+sportsbook-update timestamp.
+
+`npm test` runs 12 offline display/contract tests with Node, Vite SSR, and React
+server rendering. No additional test dependencies or live data requests are needed.
