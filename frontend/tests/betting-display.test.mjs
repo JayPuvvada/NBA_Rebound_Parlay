@@ -8,12 +8,14 @@ let server;
 let BettingAnalysis;
 let PredictResults;
 let PlayerDetailPanel;
+let PredictForm;
 let bettingView;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true, watch: null, ws: false }, appType: "custom" });
   ({ BettingAnalysis } = await server.ssrLoadModule("/src/components/ui/BettingAnalysis.tsx"));
   ({ PredictResults } = await server.ssrLoadModule("/src/components/ui/PredictResults.tsx"));
   ({ PlayerDetailPanel } = await server.ssrLoadModule("/src/components/ui/PlayerDetailPanel.tsx"));
+  ({ PredictForm } = await server.ssrLoadModule("/src/components/ui/PredictForm.tsx"));
   ({ bettingView } = await server.ssrLoadModule("/src/lib/betting.ts"));
 });
 after(async () => { await server?.close(); });
@@ -45,6 +47,15 @@ test("core display keeps price, probabilities, return, range and minutes without
   for (const text of ["Kelly", "Fano", "Confidence", "Raw Mult", "Probability edge", "Implied probability", "prediction interval", "Model insights"]) assert.ok(!html.includes(text), text);
   assert.equal((html.match(/Model win probability/g) ?? []).length, 2);
   assert.ok(!html.includes("push probability"));
+});
+
+test("public lookup hides ledger saving and token controls", () => {
+  const html = renderToStaticMarkup(createElement(PredictForm));
+  assert.ok(html.includes("Check rebound prop"));
+  assert.ok(html.includes("Over odds"));
+  for (const text of ["Optional performance tracking", "Save a qualifying", "lookup-ledger-token", 'type="checkbox"', 'type="password"']) {
+    assert.ok(!html.includes(text), text);
+  }
 });
 
 test("unpriced analysis never invents odds or a recommendation", () => {

@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { DataFreshness } from "./DataFreshness";
+import { SavePickControl } from "./SavePickControl";
 import { formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
 import { bettingView, noBetReason } from "@/lib/betting";
 import type { CheatRange, MarketOdds, ProjectionBase, ProjectionMetrics, SimulationRange } from "@/types/api";
@@ -55,6 +56,7 @@ export function BettingAnalysis({ data, metrics: rawMetrics, range, marketOdds, 
         </p>
       </div>
 
+      <SavePickControl data={data} metrics={metrics} />
       {limitations.length > 0 && (
         <div className="rounded-lg border border-yellow-900/50 bg-yellow-950/20 p-3 text-sm text-yellow-200" role="status">
           <p className="font-semibold">Before you decide</p>

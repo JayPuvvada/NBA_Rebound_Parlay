@@ -18,6 +18,28 @@ anchored to `0f0b903`; newer display changes are listed separately.
 
 ## Contents
 
+**Current saving UI:** **My Picks** now uses Supabase Auth and private database
+rows. Create and approve only your user initially; the same policies support
+adding friends later. Public signup and anonymous login must be disabled in
+Supabase's dashboard. See the [Supabase Free setup](docs/private-account.md).
+Your project, user and database policies must be configured before cloud saving
+works. No hosted project, default real password, or Render deployment is created
+automatically. The earlier custom Flask/Neon account prototype has been replaced.
+
+Player Lookup still sends `record_prediction: false` and no ledger token. The
+backend performance ledger and existing records remain intact for operator use.
+The earlier token-saving workflow documented below describes that retained API,
+not the new private-account bookmarks.
+
+**Try the personal demo:** run `cd frontend` then `npm run demo`, open
+<http://127.0.0.1:4181/#picks>, and sign in with your **Supabase email/password**.
+The NBA results are synthetic; login and saving use your real Supabase account.
+Sample picks remain labeled and survive clearing browser data after you sign
+back in. No NBA/odds keys or working Render deployment are required.
+The old fake login (**jay / demo123**) is only available via
+`npm run demo:offline`, with browser-only storage. See
+[frontend demo instructions](frontend/README.md#local-demo-synthetic-data-real-supabase-account).
+
 - [1. App map and navigation](#1-app-map-and-navigation)
 - [2. Daily Edge](#2-daily-edge)
 - [3. Player Lookup](#3-player-lookup)

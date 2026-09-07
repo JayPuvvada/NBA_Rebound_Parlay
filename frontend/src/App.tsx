@@ -1,18 +1,25 @@
 import { lazy, Suspense, useEffect, useState, type KeyboardEvent } from "react";
 import { SplineSceneBasic } from "@/components/ui/demo";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { PersonalProvider } from "@/components/PersonalProvider";
+import { AccountProvider } from "@/components/AccountProvider";
+import { MyPicks } from "@/components/ui/MyPicks";
+import { demoEnabled } from "@/lib/personal-picks";
 import "./index.css";
 
 const CheatSheet = lazy(() => import("@/components/ui/CheatSheet").then((module) => ({ default: module.CheatSheet })));
 const PredictForm = lazy(() => import("@/components/ui/PredictForm").then((module) => ({ default: module.PredictForm })));
 
-type Tab = "edge" | "lookup";
+const personalDemo = demoEnabled(import.meta.env.VITE_PERSONAL_DEMO, window.location.hostname);
+type Tab = "edge" | "lookup" | "picks";
+const tabs: Tab[] = ["edge", "lookup", "picks"];
 
 function tabFromLocation(): Tab {
+  if (window.location.hash === "#picks") return "picks";
   return window.location.hash === "#lookup" ? "lookup" : "edge";
 }
 
-function App() {
+function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>(tabFromLocation);
 
   useEffect(() => {
@@ -40,9 +47,9 @@ function App() {
 
   const navigateTabs = (event: KeyboardEvent<HTMLDivElement>) => {
     let nextTab: Tab | null = null;
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") nextTab = activeTab === "edge" ? "lookup" : "edge";
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") nextTab = tabs[(tabs.indexOf(activeTab) + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
     if (event.key === "Home") nextTab = "edge";
-    if (event.key === "End") nextTab = "lookup";
+    if (event.key === "End") nextTab = tabs[tabs.length - 1];
     if (!nextTab) return;
 
     event.preventDefault();
@@ -57,7 +64,7 @@ function App() {
 
       {/* Tab Navigation */}
       <div className="mx-auto max-w-7xl px-4 pt-8 sm:px-8">
-        <div className="flex w-fit gap-1 rounded-lg bg-zinc-900/50 p-1" role="tablist" aria-label="Projection tools" onKeyDown={navigateTabs}>
+        <div className="flex w-fit flex-wrap gap-1 rounded-lg bg-zinc-900/50 p-1" role="tablist" aria-label="Projection tools" onKeyDown={navigateTabs}>
           <button
             id="edge-tab"
             type="button"
@@ -90,6 +97,7 @@ function App() {
           >
             🏀 Player Lookup
           </button>
+          <button id="picks-tab" type="button" role="tab" aria-selected={activeTab === "picks"} aria-controls="picks-panel" tabIndex={activeTab === "picks" ? 0 : -1} onClick={() => selectTab("picks")} className={`rounded-md px-3 py-2.5 text-sm font-semibold focus-visible:ring-2 focus-visible:ring-emerald-400 sm:px-5 ${activeTab === "picks" ? "bg-emerald-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>My Picks</button>
         </div>
       </div>
 
@@ -101,7 +109,7 @@ function App() {
         <div id={`${activeTab}-panel`} role="tabpanel" aria-labelledby={`${activeTab}-tab`}>
           <ErrorBoundary resetKey={activeTab}>
             <Suspense fallback={<div className="h-64 animate-pulse rounded-lg bg-zinc-900/60" aria-label="Loading section" />}>
-              {activeTab === "edge" ? <CheatSheet /> : <PredictForm />}
+              {activeTab === "edge" ? <CheatSheet /> : activeTab === "lookup" ? <PredictForm /> : <MyPicks />}
             </Suspense>
           </ErrorBoundary>
         </div>
@@ -110,4 +118,6 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  return personalDemo ? <PersonalProvider><AppContent /></PersonalProvider> : <AccountProvider><AppContent /></AccountProvider>;
+}

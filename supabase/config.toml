@@ -1,0 +1,10 @@
+# Deliberately minimal: config push must not change unrelated hosted settings.
+project_id = "nba-picks"
+
+[auth]
+site_url = "http://127.0.0.1:4181"
+enable_signup = false
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enabled = true
