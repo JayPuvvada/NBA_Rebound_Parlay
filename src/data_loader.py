@@ -285,7 +285,8 @@ class NBADataLoader:
         # Simple in-memory cache to avoid spamming API during dev
         self._cache = {}
         self._cache_loaded_at = {}
-        self._nba_stats_unavailable_until = 0.0
+        # A failed scoreboard/team-log request must not disable roster/player APIs.
+        self._nba_endpoint_unavailable_until = {}
         self._data_source_state = threading.local()
         self.reset_data_source_metadata()
         self._injury_report_metadata = {
@@ -420,8 +421,9 @@ class NBADataLoader:
             raise ValueError("max_retries must be a positive integer")
         func_name = api_func.__name__ if hasattr(api_func, '__name__') else str(api_func)
 
-        if time.monotonic() < self._nba_stats_unavailable_until:
-            raise DataUnavailableError('stats.nba.com circuit is temporarily open')
+        endpoint_key = api_func
+        if time.monotonic() < self._nba_endpoint_unavailable_until.get(endpoint_key, 0):
+            raise DataUnavailableError(f'NBA Stats {func_name} is cooling down after a connection failure; retry shortly')
 
         # Inject proxy if specifically set for NBA API (avoids breaking pip/global requests)
         nba_proxy = os.getenv('NBA_API_PROXY')
@@ -450,7 +452,9 @@ class NBADataLoader:
                 if supplied_headers:
                     headers.update(supplied_headers)
                 
-                return api_func(**kwargs, headers=headers, timeout=timeout)
+                result = api_func(**kwargs, headers=headers, timeout=timeout)
+                self._nba_endpoint_unavailable_until.pop(endpoint_key, None)
+                return result
             except Exception as e:
                 # Endpoint schema/argument errors do not mean the entire host
                 # is down. Only connectivity or blocking/server HTTP failures
@@ -462,9 +466,7 @@ class NBADataLoader:
                 if not transport_failure:
                     raise
                 if attempt == max_retries - 1:
-                    self._nba_stats_unavailable_until = (
-                        time.monotonic() + self.NBA_STATS_CIRCUIT_SEC
-                    )
+                    self._nba_endpoint_unavailable_until[endpoint_key] = time.monotonic() + 30
                     raise
 
     def get_player_id(self, player_name):
@@ -961,7 +963,7 @@ class NBADataLoader:
         
         roster = self._retry_api_call(
             commonteamroster.CommonTeamRoster,
-            team_id=team_id, season=season
+            team_id=team_id, season=season, timeout=30
         )
         df = roster.get_data_frames()[0]
         self._set_cache(key, df)
@@ -1049,7 +1051,13 @@ class NBADataLoader:
         player_row = df[df['PLAYER_ID'] == player_id]
         return player_row
 
-    INJURY_DISK_CACHE = os.path.join(PROJECT_ROOT, 'data', 'injury_report.json')
+    # Vercel's deployment files are read-only; this cache is disposable, not
+    # account storage. Render/local retain the existing data directory.
+    INJURY_DISK_CACHE = (
+        os.path.join(tempfile.gettempdir(), 'nba-injury-report.json')
+        if os.environ.get('VERCEL') == '1'
+        else os.path.join(PROJECT_ROOT, 'data', 'injury_report.json')
+    )
     INJURY_CACHE_TTL_SEC = 20 * 60  # 20 minutes
     INJURY_STALE_MAX_SEC = 6 * 60 * 60
     INJURY_FAILURE_TTL_SEC = 2 * 60

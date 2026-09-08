@@ -18,6 +18,10 @@ anchored to `0f0b903`; newer display changes are listed separately.
 
 ## Contents
 
+**Optional Vercel deployment:** see [Vercel setup](docs/vercel.md). The repository
+supports preparing a Vercel deployment alongside Render; Render's build/start
+files are retained. Hosting changes do not resolve missing NBA data by themselves.
+
 **Current saving UI:** **My Picks** now uses Supabase Auth and private database
 rows. Production builds include the public Supabase connection settings.
 Public signup is enabled for the small beta; new accounts enroll automatically.

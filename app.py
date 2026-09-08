@@ -1133,8 +1133,10 @@ def cheat_sheet():
         if not projections and any(
             diagnostic.get('all_failed') for diagnostic in team_diagnostics
         ):
+            if any(diagnostic.get('source_error_count', 0) for diagnostic in team_diagnostics):
+                raise DataUnavailableError('Player history sources failed for the selected game')
             return jsonify({
-                'error': 'Every roster projection failed; no cheat sheet was produced.',
+                'error': 'No usable player projections for this date. The selected season may not have player history yet, or required model inputs are missing.',
                 'code': 'projection_pipeline_failed',
             }), 503
         if any(
@@ -1260,6 +1262,15 @@ def cheat_sheet():
 
     except APIValidationError as exc:
         return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except (RequestException, DataUnavailableError):
+        log.exception("NBA data unavailable while generating cheat sheet")
+        response = jsonify({
+            'error': 'NBA player or team data could not be loaded. The schedule may still be available from another source. Retry in 30 seconds.',
+            'code': 'nba_data_unavailable',
+        })
+        response.status_code = 503
+        response.headers['Retry-After'] = '30'
+        return response
     except Exception:
         log.exception("Failed to generate cheat sheet")
         return jsonify({

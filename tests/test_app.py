@@ -563,6 +563,14 @@ class PredictContractTests(AppTestCase):
 
 
 class RouteContractTests(AppTestCase):
+    def test_nba_data_failure_has_specific_error_and_retry_hint(self):
+        with patch.object(app_module, 'project_team', side_effect=app_module.DataUnavailableError('private details')), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'nba_data_unavailable')
+        self.assertEqual(response.headers['Retry-After'], '30')
+        self.assertNotIn('private details', response.get_json()['error'])
+
     @staticmethod
     def _projection_diagnostics(target, status, projected, failed):
         target.update({

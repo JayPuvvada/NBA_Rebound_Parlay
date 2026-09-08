@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from requests.exceptions import RequestException
+from src.data_loader import DataUnavailableError
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
 
@@ -31,6 +33,7 @@ def _new_diagnostics(team_id, team_abbr):
         "projected_count": 0,
         "projection_error_count": 0,
         "exception_count": 0,
+        "source_error_count": 0,
         "failed_count": 0,
         "empty_roster": False,
         "all_failed": False,
@@ -448,6 +451,8 @@ def project_team(
             results.append(entry)
         except Exception as err:
             stats["exception_count"] += 1
+            if isinstance(err, (DataUnavailableError, RequestException)):
+                stats["source_error_count"] += 1
             _add_failure_sample(stats, pname, type(err).__name__)
             log.warning(f"Skipping {pname}: {err}")
 

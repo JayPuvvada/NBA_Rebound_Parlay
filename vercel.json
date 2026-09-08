@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": ".",
+      "entrypoint": "app:app",
+      "framework": "flask",
+      "buildCommand": "bash scripts/build-vercel.sh",
+      "functions": {
+        "app.py": {
+          "maxDuration": 180,
+          "excludeFiles": "{tests/**,frontend/node_modules/**,frontend/dist-demo/**,frontend/dist-offline/**,.git/**,data/*.db*,data/injury_report.json}"
+        }
+      }
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": { "service": "web" } }]
+}

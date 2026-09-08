@@ -21,3 +21,6 @@ htmlcov/
 frontend/node_modules/.tmp/
 supabase/.temp/
 supabase/.branches/
+.vercel/
+/public/
+.vercel

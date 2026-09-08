@@ -348,12 +348,26 @@ class DataLoaderTest(unittest.TestCase):
         with patch('src.data_loader.time.monotonic', return_value=1000) as clock:
             with self.assertRaises(ReadTimeout):
                 loader._retry_api_call(endpoint)
-            clock.return_value = 1100
+            clock.return_value = 1010
             with self.assertRaises(DataUnavailableError):
                 loader._retry_api_call(endpoint)
             self.assertEqual(endpoint.call_count, 1)
-            clock.return_value = 1301
+            clock.return_value = 1031
             self.assertEqual(loader._retry_api_call(endpoint), 'healthy')
+
+    def test_transport_failure_does_not_block_a_different_endpoint(self):
+        loader = self.make_loader()
+        with self.assertRaises(ReadTimeout):
+            loader._retry_api_call(Mock(side_effect=ReadTimeout('offline')))
+        roster = Mock(return_value='roster')
+        self.assertEqual(loader._retry_api_call(roster), 'roster')
+        self.assertEqual(roster.call_args.kwargs['timeout'], 8)
+
+    def test_roster_allows_a_longer_timeout(self):
+        loader = self.make_loader()
+        loader._retry_api_call = Mock(return_value=FakeEndpointResponse(pd.DataFrame([{'PLAYER_ID': 1, 'PLAYER': 'Test'}])))
+        loader.get_team_roster(10)
+        self.assertEqual(loader._retry_api_call.call_args.kwargs['timeout'], 30)
 
     def test_missing_espn_events_is_not_a_verified_empty_slate(self):
         loader = self.make_loader()
