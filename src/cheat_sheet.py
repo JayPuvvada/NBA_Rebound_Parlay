@@ -166,7 +166,16 @@ def project_team(
     _publish_diagnostics(diagnostics, stats)
     spread_value, spread_available = _finite_spread(spread)
     generated_at = datetime.now(timezone.utc).isoformat()
-    roster = loader.get_team_roster(team_id)
+    try:
+        roster = loader.get_team_roster(team_id)
+    except (RequestException, DataUnavailableError) as exc:
+        # A failed roster must not discard projections from the other team.
+        # Keep a transport failure distinct from a successfully empty roster.
+        stats.update(status='roster_unavailable', all_failed=True,
+                     exception_count=1, source_error_count=1, failed_count=1)
+        _add_failure_sample(stats, team_abbr, 'roster_unavailable', type(exc).__name__)
+        _publish_diagnostics(diagnostics, stats)
+        return []
     if roster is None or roster.empty:
         stats["empty_roster"] = True
         _finish_diagnostics(stats, [])

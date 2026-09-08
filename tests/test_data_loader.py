@@ -78,8 +78,20 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(kwargs['proxy'], 'http://proxy.invalid:8000')
         self.assertEqual(kwargs['timeout'], 9)
         self.assertIn('User-Agent', kwargs['headers'])
-        self.assertEqual(kwargs['headers']['Origin'], 'https://www.nba.com')
+        from nba_api.stats.library.http import NBAStatsHTTP
+        self.assertEqual(kwargs['headers'], NBAStatsHTTP.headers)
+        self.assertIsNot(kwargs['headers'], NBAStatsHTTP.headers)
         self.assertFalse(nba_session.verify)
+
+    def test_nba_headers_do_not_rotate_and_allow_explicit_overrides(self):
+        from nba_api.stats.library.http import NBAStatsHTTP
+        loader = self.make_loader()
+        endpoint = Mock(return_value='ok')
+        with patch('src.data_loader.get_random_headers') as random_headers:
+            loader._retry_api_call(endpoint, headers={'Referer': 'https://www.nba.com/'})
+        random_headers.assert_not_called()
+        self.assertEqual(endpoint.call_args.kwargs['headers']['Referer'], 'https://www.nba.com/')
+        self.assertEqual(endpoint.call_args.kwargs['headers']['User-Agent'], NBAStatsHTTP.headers['User-Agent'])
 
     def test_scoreboard_uses_retry_wrapper_and_returns_metadata(self):
         loader = self.make_loader()
@@ -420,6 +432,23 @@ class DataLoaderTest(unittest.TestCase):
         }]))
 
         self.assertEqual(loader.get_days_rest(1, as_of='2026-09-04'), 14)
+
+    def test_unusable_rest_history_is_marked_as_estimated(self):
+        for frame in (pd.DataFrame(), pd.DataFrame([{'TEAM_ID': 1}]),
+                      pd.DataFrame([{'GAME_DATE': 'bad-date'}])):
+            with self.subTest(columns=list(frame.columns)):
+                loader = self.make_loader()
+                loader.get_team_gamelog = Mock(return_value=frame)
+                self.assertEqual(loader.get_days_rest(1, as_of='2025-03-14'), loader.DEFAULT_DAYS_REST)
+                self.assertEqual(loader.get_data_source_metadata()['status'], 'degraded')
+                self.assertIn('neutral assumption', ' '.join(loader.get_data_source_metadata()['limitations']))
+
+    def test_failed_nba_rest_request_is_not_mislabeled_as_espn(self):
+        loader = self.make_loader()
+        loader.get_team_gamelog = Mock(side_effect=ReadTimeout('offline'))
+        self.assertEqual(loader.get_days_rest(1, as_of='2025-03-14'), loader.DEFAULT_DAYS_REST)
+        self.assertEqual(loader.get_data_source_metadata()['source'], 'stats.nba.com')
+        self.assertEqual(loader.get_data_source_metadata()['status'], 'degraded')
 
     def test_mutable_roster_cache_has_a_bounded_lifetime(self):
         loader = self.make_loader()

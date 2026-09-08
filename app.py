@@ -969,11 +969,11 @@ def predict():
         log.warning("NBA Stats request failed in /predict: %s", exc)
         return jsonify({
             'error': (
-                'NBA Stats could not be reached. Check your internet connection '
-                'or configure NBA_API_PROXY, restart Flask, and try again.'
+                'Required NBA data could not be loaded. A source request failed; '
+                'this does not necessarily mean the season has no stats. Retry in 30 seconds.'
             ),
             'code': 'nba_stats_unavailable',
-        }), 503
+        }), 503, {'Retry-After': '30'}
     except Exception as e:
         log.exception(f"Error in /predict: {e}")
         return jsonify({

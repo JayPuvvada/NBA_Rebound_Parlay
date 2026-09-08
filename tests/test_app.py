@@ -197,7 +197,8 @@ class PredictContractTests(AppTestCase):
         self.assertEqual(response.status_code, 503)
         payload = response.get_json()
         self.assertEqual(payload["code"], "nba_stats_unavailable")
-        self.assertIn("NBA_API_PROXY", payload["error"])
+        self.assertEqual(response.headers['Retry-After'], '30')
+        self.assertIn("source request failed", payload["error"])
         self.assertNotIn("upstream unavailable", payload["error"])
 
     def test_missing_safety_metadata_fails_closed(self):
@@ -563,6 +564,30 @@ class PredictContractTests(AppTestCase):
 
 
 class RouteContractTests(AppTestCase):
+    def test_roster_source_failure_keeps_other_team_and_warns(self):
+        def project(*args, **kwargs):
+            if args[3] == BOS_ID:
+                kwargs['diagnostics'].update(status='roster_unavailable', all_failed=True,
+                                             source_error_count=1, failed_count=1)
+                return []
+            kwargs['diagnostics'].update(status='ok', all_failed=False, failed_count=0)
+            return [{'player': 'Test Player', 'projection': 7.0, 'actionable': False}]
+        with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.get_json()['projections']), 1)
+        self.assertTrue(any('partial' in w for w in response.get_json()['warnings']))
+
+    def test_both_rosters_unavailable_returns_source_error(self):
+        def project(*args, **kwargs):
+            kwargs['diagnostics'].update(status='roster_unavailable', all_failed=True,
+                                         source_error_count=1, failed_count=1)
+            return []
+        with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'nba_data_unavailable')
+
     def test_nba_data_failure_has_specific_error_and_retry_hint(self):
         with patch.object(app_module, 'project_team', side_effect=app_module.DataUnavailableError('private details')), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
             response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')

@@ -40,6 +40,15 @@ class PositionNormalizationTest(unittest.TestCase):
 
 
 class PlayerStatsTest(unittest.TestCase):
+    def test_empty_history_is_not_reported_as_unknown_player(self):
+        loader = Mock()
+        loader.get_player_gamelog.return_value = pd.DataFrame()
+        engineer = FeatureEngineer(loader)
+        for method in (engineer.compute_projection, engineer.compute_composite_projection):
+            result = method(203999, 'LAL', as_of_date='2026-10-01')
+            self.assertIn('selected date and season', result['error'])
+            self.assertNotIn('Player not found', result['error'])
+
     def test_total_only_fallback_uses_precutoff_observations_and_keeps_split_unknown(self):
         from src.data_loader import NBADataLoader
         from unittest.mock import patch

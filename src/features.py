@@ -849,7 +849,7 @@ class FeatureEngineer:
         # 1. Load Data
         p_stats = self.get_player_stats(player_id, opponent_abbrev, as_of_date=as_of_date)
         if not p_stats: 
-            return {'error': 'Player stats not found'}
+            return {'error': 'Usable player statistics are unavailable for the selected date and season. History may be empty or required fields may be missing.'}
         p_stats = dict(p_stats)
         rate_keys = (
             'season_oreb_rate', 'season_dreb_rate',
@@ -1144,7 +1144,8 @@ class FeatureEngineer:
 
         # 1. Prelim: Get Player Info
         p_info = self.get_player_stats(player_id, as_of_date=as_of_date)
-        if not p_info: return {'error': 'Player not found'}
+        if not p_info:
+            return {'error': 'Usable player statistics are unavailable for the selected date and season. History may be empty or required fields may be missing.'}
         pos = p_info['position']
         
         # 2. Matchup Player Identification (Auto-find if not provided)

@@ -307,6 +307,19 @@ class CheatSheetPersistenceTest(unittest.TestCase):
 
 
 class CheatSheetDiagnosticsTest(unittest.TestCase):
+    def test_failed_roster_is_reported_without_aborting_other_team(self):
+        from unittest.mock import Mock
+        from requests.exceptions import ReadTimeout
+        loader = FakeLoader()
+        loader.get_team_roster = Mock(side_effect=ReadTimeout('private connection details'))
+        diagnostics = {}
+        self.assertEqual(_run({}, loader=loader, diagnostics=diagnostics), [])
+        self.assertEqual(diagnostics['status'], 'roster_unavailable')
+        self.assertEqual(diagnostics['source_error_count'], 1)
+        self.assertTrue(diagnostics['all_failed'])
+        self.assertFalse(diagnostics['empty_roster'])
+        self.assertNotIn('private connection details', str(diagnostics))
+
     def test_empty_roster_is_distinct_from_all_failed(self):
         diagnostics = {}
         rows = _run({}, loader=FakeLoader([]), diagnostics=diagnostics)

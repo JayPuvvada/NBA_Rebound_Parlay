@@ -447,8 +447,9 @@ class NBADataLoader:
                     delay = 0.5 * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
                     time.sleep(delay)
                 
-                # Use fresh headers every attempt to rotate User-Agent
-                headers = get_random_headers()
+                # Keep the NBA client's coherent default header set. Random
+                # browser headers made identical local history probes unreliable.
+                headers = dict(NBAStatsHTTP.headers)
                 if supplied_headers:
                     headers.update(supplied_headers)
                 
@@ -1405,13 +1406,16 @@ class NBADataLoader:
                 exc,
             )
             self.mark_data_degraded(
-                'team rest was unavailable and used the neutral assumption'
+                'team rest was unavailable and used the neutral assumption',
+                source='stats.nba.com',
             )
             return self.DEFAULT_DAYS_REST
         if logs.empty:
+            self.mark_data_degraded('team rest used the neutral assumption because game history is empty', source='stats.nba.com')
             return self.DEFAULT_DAYS_REST
 
         if 'GAME_DATE' not in logs.columns:
+            self.mark_data_degraded('team rest used the neutral assumption because game dates are missing', source='stats.nba.com')
             return self.DEFAULT_DAYS_REST
         last_game_date_str = logs.iloc[0]['GAME_DATE']
         try:
@@ -1431,6 +1435,7 @@ class NBADataLoader:
             return rest
         except Exception as e:
             log.warning(f"Error calculating rest for team {team_id}: {e}")
+            self.mark_data_degraded('team rest used the neutral assumption because the game date could not be parsed', source='stats.nba.com')
             return self.DEFAULT_DAYS_REST
 
     def _fetch_espn_games_for_date(self, requested_date):
