@@ -2,9 +2,11 @@
 project_id = "nba-picks"
 
 [auth]
-site_url = "http://127.0.0.1:4181"
-enable_signup = false
+site_url = "https://nba-rebound-parlay.onrender.com"
+additional_redirect_urls = ["https://nba-rebound-parlay.onrender.com/?auth=confirm", "http://127.0.0.1:4181/?auth=confirm", "http://localhost:5173/?auth=confirm"]
+enable_signup = true
 enable_anonymous_sign_ins = false
 
 [auth.email]
 enabled = true
+enable_confirmations = false

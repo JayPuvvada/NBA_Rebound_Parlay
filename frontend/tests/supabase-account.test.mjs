@@ -24,6 +24,13 @@ function fakeClient() {
         if (password !== 'valid') return { data: {}, error: { message: 'Invalid credentials' } };
         emit(email.split('@')[0]); return { data: { user }, error: null };
       },
+      async signUp({ email }) {
+        if (email === 'failure@example.com') return { data: {}, error: { message: 'Email delivery failed' } };
+        if (email === 'immediate@example.com') {
+          emit('immediate'); return { data: { user, session: { user } }, error: null };
+        }
+        return { data: { user: { id: 'pending', email }, session: null }, error: null };
+      },
       async signOut() { emit(null); return { error: null }; },
     },
     from(table) {
@@ -107,4 +114,33 @@ test('reads every page instead of silently limiting a users saved picks', async 
   const fake=fakeClient();fake.rows.set('alice',Array.from({length:501},(_,i)=>({...pick,id:String(i)})));
   const account=new SupabaseAccount(fake.client);const stop=account.start();
   try {await account.login('alice@example.com','valid');assert.equal(account.getSnapshot().picks.length,501);} finally {stop();}
+});
+
+test('signup waits for email confirmation and never treats a pending user as signed in', async () => {
+  const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
+  try {
+    assert.equal(await account.signup('new@example.com','short'),false);
+    assert.match(account.getSnapshot().error,/at least 12/);
+    assert.equal(await account.signup('new@example.com','a-long-test-password'),'confirmation');
+    assert.equal(account.getSnapshot().signedIn,false);
+    assert.deepEqual(account.getSnapshot().picks,[]);
+    assert.equal(account.getSnapshot().busy,false);
+    assert.equal(await account.save(pick),false);
+    assert.equal(await account.signup('failure@example.com','a-long-test-password'),false);
+    assert.match(account.getSnapshot().error,/Email delivery failed/);
+  } finally {stop();}
+});
+
+test('auto-confirm signup loads the new account and saves without an email roundtrip', async () => {
+  const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
+  try {
+    assert.equal(await account.signup('immediate@example.com','a-long-test-password'),'signed-in');
+    assert.equal(account.getSnapshot().signedIn,true);
+    assert.equal(account.getSnapshot().username,'immediate@example.com');
+    assert.equal(await account.save(pick),true);
+    assert.equal(account.getSnapshot().picks.length,1);
+    await account.logout();
+    await account.login('immediate@example.com','valid');
+    assert.equal(account.getSnapshot().picks.length,1);
+  } finally {stop();}
 });

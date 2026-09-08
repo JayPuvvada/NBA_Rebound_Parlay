@@ -1,12 +1,28 @@
-# Supabase Free: local sample picks, real private accounts
+# Supabase Free: private saved picks and public-signup rollout
 
-## Current local setup status
+## Current setup status
 
 This checkout is now connected to the existing project in the `nba-picks`
-organization. The schema below is installed, exactly one existing confirmed user
-is approved, public signup/anonymous sign-in are disabled, and the local site URL
-is configured. The frontend connection settings are in git-ignored
-`frontend/.env.local`. No Render deployment or billing-plan changes were made.
+organization. The original saved-picks schema is installed and the owner's
+replacement account is approved. The public-signup enrollment migration has
+also been added: newly confirmed, non-anonymous accounts automatically receive
+access to their own picks. Existing approvals and revocations are preserved.
+
+The production URL is **https://nba-rebound-parlay.onrender.com/#picks**.
+`frontend/.env.production` intentionally contains only the public project URL
+and publishable key, so Render's regular build can connect without dashboard
+environment changes. These are browser-visible identifiers, not administrator
+credentials. Render environment variables, if present, override this file.
+Local overrides remain in git-ignored `frontend/.env.local`.
+
+**Small-beta signup:** at the owner's explicit request, public signup is enabled
+and **email confirmation is OFF**. Production has `VITE_PUBLIC_SIGNUP=true`.
+Users choose an email/password and sign in immediately. Supabase auto-confirms
+the record and the enrollment trigger grants access to that user's private rows.
+This does not prove ownership of the email address. Anyone who discovers the
+site can register; sharing the URL only with friends is not an access restriction.
+There is no password-reset email flow. No email provider account, paid plan, or
+domain was purchased.
 
 Open **http://127.0.0.1:4181/#picks** and use the email/password you created in
 Supabase. The hosted Auth/session and database save/read/update/delete checks
@@ -14,31 +30,60 @@ passed; the temporary verification row was removed and its session signed out.
 Your password was not changed. NBA results in this demo are still synthetic.
 
 The instructions below are retained for a new project/checkout. **Do not rerun
-the create-table migration on this already configured project.**
+either migration on the already configured project.**
 
 This is the current account setup. It replaces the earlier custom Flask/Neon
 prototype. No Render deployment is needed to test it.
 
 - **NBA data:** fixed synthetic fixtures in `npm run demo`.
 - **Login and saving:** real Supabase Auth and database, once configured.
-- **Access:** create only your user initially; each approved user has private rows.
+- **Access:** password accounts with automatic enrollment and per-user private picks.
 - **Cost:** choose Supabase **Free**, with no paid upgrades or add-ons.
-- **Not included:** placing bets, verified grading, public signup, live-data fixes.
+- **Not included:** placing bets, verified grading, self-service password reset, live-data fixes.
+
+## Public signup configuration and future email verification
+
+1. Current beta: **Allow new users to sign up** ON, **Confirm email** OFF, and
+   anonymous sign-ins OFF. The backend switch alone is not a complete signup flow.
+2. Install `202609080001_public_signup.sql` after the original schema on a new
+   project. It enrolls users on first email confirmation with a restricted
+   trigger; no browser can grant itself membership. Both migrations are already
+   installed in this project.
+3. Set `VITE_PUBLIC_SIGNUP=true` in the frontend build environment and rebuild.
+   The form requires a matching password confirmation and at least 12 characters;
+   Supabase still enforces its own server-side password policy.
+4. Test immediate signup, sign-in, save/reload, sign-out/back in, deletion, and
+   isolation between two different accounts before inviting people.
+
+To enable verification later, first configure a custom SMTP sender, verify email
+delivery, and update signup text/callback handling. Then turn Confirm email ON.
+Supabase's default sender cannot email ordinary public users. Existing
+auto-confirmed accounts do not retroactively become email-verified identities.
+The app already handles signup responses with no session as pending, not signed
+in. Password recovery and email changes need a separate tested account flow.
+
+Public signup needs abuse monitoring; Supabase rate limits remain in place, but
+CAPTCHA and invite-only controls have not been configured. Email addresses are
+unverified identifiers in this beta—do not use them as proof of identity for
+support or password resets. Picks remain isolated by immutable Auth user ID.
+
+Reference: [Supabase email delivery requirements](https://supabase.com/docs/guides/auth/auth-smtp).
 
 ## 1. Create your free project and user
 
 1. Open [Supabase Dashboard](https://supabase.com/dashboard), create a **Free**
    organization/project (for example, `nba-picks`). Keep the database password
    private; the frontend does not need it.
-2. In **Authentication → Sign In / Providers**, turn **Allow new users to sign up**
+2. For an initial owner-only installation, in **Authentication → Sign In / Providers**, turn **Allow new users to sign up**
    OFF and **Allow anonymous sign-ins** OFF. Keep email/password authentication
    enabled. Hiding the signup form alone is not enough.
 3. In **Authentication → Users → Add user / Create new user**, create your own
    email/password account and enable **Auto Confirm User**. Use a unique strong
    password. This is your app login, separate from the database password.
    No email invitations or custom email service are needed for this manual setup.
-4. In Authentication URL Configuration, set the local Site URL to
-   `http://127.0.0.1:4181`. The app uses direct password login, not magic links.
+4. In Authentication URL Configuration, set Site URL to your deployed origin
+   (or `http://127.0.0.1:4181` for a local-only setup). The app uses password login
+   without email-confirmation callbacks in the current beta.
    There is no self-service email password-reset flow in this first version.
 
 Reference: [Supabase Auth settings](https://supabase.com/docs/guides/auth/general-configuration).
@@ -61,9 +106,11 @@ on conflict do nothing;
 Verify there is **one row** in `app_pick_members` in Table Editor.
 If no row appears, the email does not match an existing Auth user.
 
-Only an administrator can add members. Signed-in users cannot approve themselves.
+On the original owner-only schema, only an administrator can add members.
+With the second migration, a database trigger enrolls new confirmed/auto-confirmed
+accounts. Signed-in users cannot directly write the membership table.
 Database row-level security restricts each approved user to their own saved picks.
-This protects access even if someone accidentally enables signup later.
+Membership can still be revoked independently of account deletion.
 [Supabase RLS documentation](https://supabase.com/docs/guides/database/postgres/row-level-security).
 
 ## 3. Connect the local frontend
@@ -118,11 +165,14 @@ The first local demo used browser storage. It is retained as
 That command alone uses the public test credentials `jay / demo123`.
 Its records are browser-only and are **not** imported into your Supabase account.
 
-## 5. Add friends later, without public signup
+## 5. Friends' accounts and revocation
 
-Repeat the dashboard user-creation step and membership query for each friend's
-email. No app rewrite is required. Each account sees its own picks—even when two
-users save the same quote. Keep public signup and anonymous sign-ins disabled.
+Friends can use **My Picks → New here? Create an account** in the production
+build. You can alternatively create accounts manually. With the second migration installed, creating a confirmed
+non-anonymous user automatically enrolls it. On an owner-only installation with
+just the first migration, also run the membership query for each friend.
+Each account sees its own picks—even when two users save the same quote.
+Keep anonymous sign-ins disabled.
 
 Removing someone's `app_pick_members` row blocks their future database access
 without deleting their saved picks. Deleting the Auth user also deletes their
@@ -155,16 +205,17 @@ as a password-reset method if you want to retain their data.
 - Keep backups of important data. Clearing browser data is safe for cloud picks;
   deleting the Supabase project/database is not.
 
-## Render later—not needed now
+## Render deployment
 
-Use the same project URL and publishable key as Render **build-time** environment
-variables, then rebuild the regular frontend with `npm run build`.
+The checked-in `.env.production` supplies the project URL and publishable key.
+You may instead override these as Render **build-time** environment variables,
+then rebuild the regular frontend with `npm run build`.
 Do not deploy the sample server or enable demo flags in production.
-Add your deployed URL to the appropriate Supabase URL settings.
+The deployed URL and local callbacks are declared in `supabase/config.toml`.
 
 The Supabase calls go directly from the browser to Supabase; Flask is still used
 for NBA projections only. This does not fix or verify the existing hosted
-NBA-data-access problem. No Render configuration is changed by this setup.
+NBA-data-access problem. Publishing code does not change Render's plan or service settings.
 
 ## Tests
 
@@ -178,9 +229,17 @@ Tests cover login/store transitions with an offline SDK double and actual
 PostgreSQL row-level-security behavior in PGlite: separate owners, blocked
 anonymous/unapproved users, forged ownership, immutable quotes, manual grading,
 and deletion isolation. No Supabase project or real credentials are used by tests.
-A real end-to-end Supabase login/save check remains necessary after steps 1–3.
+A real end-to-end Supabase login/save check passed for the original account; the
+owner also tested the replacement account locally. Public-signup API checks and
+deployment verification are separate from these offline tests; do not claim
+email ownership is verified in this beta.
+
+Two disposable accounts passed live public signup with immediate sessions,
+automatic membership, private save/read/manual result, fresh-client login,
+cross-user/forged-owner denial, anonymous denial, and removal. Both test accounts
+and their linked data were removed afterward; the owner's data was untouched.
 
 The frontend dependency audit currently reports 10 advisories (including seven
 high-severity) in existing tooling dependencies. The Supabase packages were not
 flagged. Broader dependency upgrades were not included in this account change;
-review these before the later deployment.
+these are build/development tools rather than the Flask-served account API.

@@ -4,7 +4,7 @@ A guide to the web app, its model, and the recent changes.
 
 This app estimates **individual NBA player rebounds**, calculates Over/Under
 probabilities, and compares them with side-specific sportsbook prices. It has
-two main tabs: **Daily Edge** and **Player Lookup**.
+three tabs: **Daily Edge**, **Player Lookup**, and **My Picks**.
 
 Despite the repository name, it does **not** build parlays, calculate correlated
 multi-leg probabilities, place bets, or connect to your sportsbook account.
@@ -19,9 +19,11 @@ anchored to `0f0b903`; newer display changes are listed separately.
 ## Contents
 
 **Current saving UI:** **My Picks** now uses Supabase Auth and private database
-rows. Create and approve only your user initially; the same policies support
-adding friends later. Public signup and anonymous login must be disabled in
-Supabase's dashboard. See the [Supabase Free setup](docs/private-account.md).
+rows. Production builds include the public Supabase connection settings.
+Public signup is enabled for the small beta; new accounts enroll automatically.
+Email confirmation is disabled at the owner's request. Emails are unverified,
+and anyone who discovers the site can register. Password reset is not available.
+Anonymous login remains disabled. See the [Supabase Free setup](docs/private-account.md).
 Your project, user and database policies must be configured before cloud saving
 works. No hosted project, default real password, or Render deployment is created
 automatically. The earlier custom Flask/Neon account prototype has been replaced.
@@ -57,7 +59,7 @@ The old fake login (**jay / demo123**) is only available via
 
 ## 1. App map and navigation
 
-There is one React application with two tabs, not a collection of separate
+There is one React application with three tabs, not a collection of separate
 server-rendered pages:
 
 ```text

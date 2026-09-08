@@ -95,6 +95,27 @@ export class SupabaseAccount {
     } catch (error) { this.fail(error); return false; }
     finally { this.changing = false; this.update({ busy: false }); }
   };
+  signup = async (email: string, password: string): Promise<"confirmation" | "signed-in" | false> => {
+    if (!this.client || this.changing || this.user) return false;
+    this.changing = true;
+    this.update({ busy: true, error: "" });
+    try {
+      if (password.length < 12) throw Error("Choose a password with at least 12 characters.");
+      const { data, error } = await this.client.auth.signUp({
+        email: email.trim(), password,
+        options: typeof window === "undefined" ? undefined : {
+          emailRedirectTo: `${window.location.origin}/#picks`,
+        },
+      });
+      if (error) throw error;
+      // A pending or intentionally obscured existing user is NOT a session.
+      if (!data.session) return "confirmation";
+      this.identify(data.session.user);
+      await this.load();
+      return "signed-in";
+    } catch (error) { this.fail(error); return false; }
+    finally { this.changing = false; this.update({ busy: false }); }
+  };
   logout = async () => {
     if (!this.client || this.changing) return;
     this.changing = true;

@@ -5,9 +5,10 @@ React 19, TypeScript, Vite, Tailwind CSS, and Recharts power three interface vie
 - **Daily Edge** loads the NBA schedule, then displays the selected game's player props in backend-ranked edge order.
 - **Player Lookup** runs one date-specific projection with optional Over and Under prices.
 - **My Picks** uses Supabase email/password login and per-user private snapshots.
-  Approve only your account initially; friends can be added later without a rewrite.
-  See [Supabase Free setup](../docs/private-account.md). There is no signup form;
-  disable signup and anonymous sign-ins in the dashboard too.
+  Production enables signup and immediate password login without email verification
+  for the owner-approved small beta. New accounts enroll automatically and stay
+  isolated by RLS. Anonymous sign-ins remain disabled; password reset is not available.
+  See [Supabase Free setup](../docs/private-account.md).
 
 ## Local development
 
@@ -108,6 +109,10 @@ unverified/degraded eligibility or stale quotes. All reported limitations and
 injury freshness warnings remain visible. A projection timestamp is not a
 sportsbook-update timestamp.
 
-`npm test` runs 29 offline display, storage, auth-transition and access-control
+Production builds use the public connection settings in `.env.production`.
+Environment variables on Render override that file. Never commit privileged keys.
+Signup auto-confirms accounts in this beta, without an email/callback roundtrip.
+
+`npm test` runs 33 offline display, storage, auth-transition and access-control
 tests. PGlite executes the actual PostgreSQL migration to verify ownership and
 membership rules. No real Supabase credentials or live NBA requests are used.

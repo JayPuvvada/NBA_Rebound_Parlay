@@ -18,6 +18,8 @@ export function supabaseConfig(url: string | undefined, key: string | undefined)
 }
 const config = supabaseConfig(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
 export const supabaseSetupError = config.error;
+// UI release flag; Supabase settings and RLS independently enforce access.
+export const publicSignupEnabled = import.meta.env.VITE_PUBLIC_SIGNUP === "true";
 const offline = typeof window !== "undefined" && demoEnabled(import.meta.env.VITE_PERSONAL_DEMO, window.location.hostname);
 // This client is browser-only. SSR/offline tests must never initialize a live
 // account connection just because this checkout has .env.local configured.

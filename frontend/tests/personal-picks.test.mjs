@@ -83,8 +83,8 @@ test('My Picks hides snapshots when signed out and labels demo/manual results', 
 test('real account UI contains no demo credentials and marks database storage', () => {
   const account = { ...state, mode: 'account', username: 'owner', enabled: true };
   const loggedOut = render(MyPicks, {}, { ...account, signedIn: false });
-  assert.match(loggedOut, /no public registration/);
-  assert.match(loggedOut, /database/);
+  assert.match(loggedOut, /Public signup is not available yet/);
+  assert.match(loggedOut, /stored online/);
   assert.doesNotMatch(loggedOut, /demo123|Test password|Test username/);
   const snapshot = lib.snapshotPick(data, metrics, false);
   assert.equal(snapshot.demo, false);
@@ -92,4 +92,11 @@ test('real account UI contains no demo credentials and marks database storage', 
   assert.match(saved, /Saved model snapshot/);
   assert.doesNotMatch(saved, /Demo saved pick/);
   assert.equal(render(SavePickControl, { data, metrics }, { ...account, enabled: false }), '');
+});
+
+test('signup entry point appears only when the account provider enables it', () => {
+  const account = { ...state, mode: 'account', enabled: true, signedIn: false, signup: async () => 'confirmation' };
+  assert.match(render(MyPicks, {}, account), /New here\? Create an account/);
+  assert.doesNotMatch(render(MyPicks, {}, { ...account, signup: undefined }), /New here/);
+  assert.doesNotMatch(render(MyPicks, {}, { ...account, mode: 'demo' }), /New here/);
 });

@@ -10,6 +10,7 @@ export interface PersonalState {
   picks: SavedPick[];
   error: string;
   login: (username: string, password: string) => boolean | Promise<boolean>;
+  signup?: (email: string, password: string) => Promise<"confirmation" | "signed-in" | false>;
   logout: () => void | Promise<void>;
   save: (pick: SavedPick) => boolean | Promise<boolean>;
   remove: (id: string) => void;
