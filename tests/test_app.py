@@ -564,6 +564,36 @@ class PredictContractTests(AppTestCase):
 
 
 class RouteContractTests(AppTestCase):
+    def test_request_budget_is_cleared_after_route_failure(self):
+        real_loader = app_module.NBADataLoader(season='2025-26')
+        with patch.object(app_module, '_components_for_date', return_value=(real_loader, self.engineer)), patch.object(real_loader, 'get_games_for_date_fresh', side_effect=app_module.DataUnavailableError('offline')):
+            response = self.client.get(f'/cheat-sheet?team=BOS&date={date.today().isoformat()}')
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(getattr(real_loader._data_source_state, 'deadline', None))
+
+    def test_empty_rosters_do_not_look_like_successful_empty_slate(self):
+        def project(*args, **kwargs):
+            kwargs['diagnostics'].update(status='empty_roster', empty_roster=True,
+                                         all_failed=False, failed_count=0)
+            return []
+        with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'projection_pipeline_failed')
+
+    def test_one_empty_roster_marks_other_team_results_partial(self):
+        def project(*args, **kwargs):
+            if args[3] == BOS_ID:
+                kwargs['diagnostics'].update(status='empty_roster', empty_roster=True,
+                                             all_failed=False, failed_count=0)
+                return []
+            kwargs['diagnostics'].update(status='ok', all_failed=False, failed_count=0)
+            return [{'player': 'Test Player', 'projection': 7.0, 'actionable': False}]
+        with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any('partial' in w for w in response.get_json()['warnings']))
+
     def test_roster_source_failure_keeps_other_team_and_warns(self):
         def project(*args, **kwargs):
             if args[3] == BOS_ID:

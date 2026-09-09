@@ -25,7 +25,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function errorMessage(payload: unknown, fallback: string): string {
   if (!isRecord(payload)) return fallback;
   const candidate = payload as ApiErrorPayload;
-  return candidate.error || candidate.message || fallback;
+  for (const value of [candidate.error, candidate.message]) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return fallback;
 }
 
 export async function fetchJson<T>(
@@ -47,8 +50,12 @@ export async function fetchJson<T>(
   }, timeoutMs);
 
   try {
+    if (controller.signal.aborted) throw new Error('Request cancelled');
     const response = await fetch(input, { ...init, signal: controller.signal });
     const raw = await response.text();
+    // Some mocked/custom fetch implementations resolve despite cancellation.
+    // Do not hand a late response back to a newer UI request.
+    if (controller.signal.aborted) throw new Error('Request cancelled');
     let payload: unknown = null;
 
     if (raw) {
@@ -98,6 +105,13 @@ export function unwrapCheatSheet(response: CheatSheetResponse): {
   odds?: CheatSheetOddsStatus;
   warnings: string[];
 } {
+  const rows: unknown = Array.isArray(response) ? response : isRecord(response) ? response.projections : null;
+  if (!Array.isArray(rows) || rows.some(row =>
+    !isRecord(row) || typeof row.player !== 'string' || !row.player.trim()
+    || typeof row.projection !== 'number' || !Number.isFinite(row.projection) || row.projection < 0
+  )) {
+    throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
+  }
   if (Array.isArray(response)) {
     return {
       rows: response,
@@ -116,7 +130,8 @@ export function unwrapCheatSheet(response: CheatSheetResponse): {
       ...row,
       bookmaker: row.bookmaker ?? response.bookmaker,
       odds_source: row.odds_source ?? response.odds_source ?? response.odds?.source,
-      odds_updated_at: row.odds_updated_at ?? response.odds?.fetched_at,
+      // Download time is not the sportsbook's quote update time.
+      odds_updated_at: row.odds_updated_at ?? response.odds?.updated_at,
       generated_at: row.generated_at ?? response.generated_at,
     })),
     generatedAt: response.generated_at,

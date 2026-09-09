@@ -100,6 +100,62 @@ class TTLCacheTest(unittest.TestCase):
         self.assertEqual(calls, [True])
         self.assertEqual(results, [[3], [3]])
 
+    def test_expired_waiter_does_not_cancel_cache_owner(self):
+        entered = threading.Event()
+        release = threading.Event()
+        results = []
+
+        class Loader:
+            def _bounded_timeout(self, timeout):
+                raise TimeoutError('waiting request expired')
+
+            @ttl_cache(60)
+            def fetch(self):
+                entered.set()
+                release.wait(timeout=2)
+                return [7]
+
+        loader = Loader()
+        owner = threading.Thread(target=lambda: results.append(loader.fetch()))
+        owner.start()
+        try:
+            self.assertTrue(entered.wait(timeout=2))
+            with self.assertRaises(TimeoutError):
+                loader.fetch()
+        finally:
+            release.set()
+            owner.join(timeout=2)
+        self.assertEqual(results, [[7]])
+        self.assertEqual(loader.fetch(), [7])
+
+    def test_invalidation_during_fetch_does_not_repopulate_old_result(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+        results = []
+
+        @ttl_cache(60)
+        def fetch():
+            calls.append(True)
+            if len(calls) == 1:
+                entered.set()
+                release.wait(timeout=2)
+                return 'old'
+            return 'new'
+
+        owner = threading.Thread(target=lambda: results.append(fetch()))
+        owner.start()
+        try:
+            self.assertTrue(entered.wait(timeout=2))
+            fetch.invalidate()
+        finally:
+            release.set()
+            owner.join(timeout=2)
+        self.assertEqual(results, ['old'])
+        self.assertEqual(fetch(), 'new')
+        self.assertEqual(fetch(), 'new')
+        self.assertEqual(len(calls), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

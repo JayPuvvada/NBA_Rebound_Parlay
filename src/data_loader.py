@@ -27,6 +27,10 @@ class DataUnavailableError(RuntimeError):
     """Raised when an upstream source failed rather than returned valid empty data."""
 
 
+class RequestBudgetExceeded(DataUnavailableError):
+    """No more upstream work should be started for this request."""
+
+
 def _source_cache(seconds, *, cache_empty=False):
     """Cache data together with its provenance, replaying it on every read."""
     def decorate(method):
@@ -341,6 +345,9 @@ class NBADataLoader:
 
             log.info("Loaded offline cache successfully.")
             self.offline_cache_timestamp = generated_at.astimezone(timezone.utc).isoformat()
+            # Loading a snapshot must not extend its original hard expiry.
+            snapshot_remaining = max(0, self.OFFLINE_CACHE_TTL_SEC - max(0, age_sec))
+            dashboard_loaded_at = time.monotonic() - max(0, 2700 - snapshot_remaining)
             
             # Map the JSON arrays back to Pandas DataFrames in our memory cache
             keys_to_map = [
@@ -356,25 +363,36 @@ class NBADataLoader:
                     # may satisfy an unqualified/current lookup. Historical
                     # snapshots remain available solely under their exact date.
                     if current_snapshot:
-                        self._cache[f"{key}_{self.season}"] = frame
+                        self._set_cache(f"{key}_{self.season}", frame)
+                        self._cache_loaded_at[f"{key}_{self.season}"] = dashboard_loaded_at
                     if cache_as_of:
-                        self._cache[f"{key}_{self.season}_{cache_as_of}"] = frame.copy(deep=True)
+                        self._set_cache(f"{key}_{self.season}_{cache_as_of}", frame.copy(deep=True))
+                        self._cache_loaded_at[f"{key}_{self.season}_{cache_as_of}"] = dashboard_loaded_at
                     
             # Load rosters
             if 'rosters' in cache:
                 for team_id, roster_data in cache['rosters'].items():
                     roster_key = f"roster_{team_id}_{self.season}"
                     self._cache[roster_key] = pd.DataFrame(roster_data)
-                    self._cache_loaded_at[roster_key] = time.monotonic()
+                    self._cache_loaded_at[roster_key] = time.monotonic() - max(0, age_sec)
 
         except Exception as e:
             log.warning(f"Ignoring invalid offline cache: {e}")
 
     def _get_from_cache(self, key):
+        # League dashboards used to live forever in a running worker. Bound
+        # retention so corrections/new games can be seen without a restart.
+        if key.startswith('league_') and key in self._cache:
+            loaded_at = self._cache_loaded_at.get(key)
+            if loaded_at is None or time.monotonic() - loaded_at >= 2700:
+                self._cache.pop(key, None)
+                self._cache_loaded_at.pop(key, None)
+                return None
         return self._cache.get(key)
 
     def _set_cache(self, key, value):
         self._cache[key] = value
+        self._cache_loaded_at[key] = time.monotonic()
 
     def get_injury_report_metadata(self):
         """Return non-sensitive provenance for the currently held injury data."""
@@ -445,7 +463,7 @@ class NBADataLoader:
                 # Back off only after a failed attempt; do not delay healthy calls.
                 if attempt:
                     delay = 0.5 * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
-                    time.sleep(delay)
+                    self._budget_sleep(delay)
                 
                 # Keep the NBA client's coherent default header set. Random
                 # browser headers made identical local history probes unreliable.
@@ -453,7 +471,10 @@ class NBADataLoader:
                 if supplied_headers:
                     headers.update(supplied_headers)
                 
-                result = api_func(**kwargs, headers=headers, timeout=timeout)
+                started = time.monotonic()
+                call_timeout = self._bounded_timeout(timeout)
+                result = api_func(**kwargs, headers=headers, timeout=call_timeout)
+                log.debug('NBA endpoint=%s outcome=success elapsed=%.3fs', func_name, time.monotonic() - started)
                 self._nba_endpoint_unavailable_until.pop(endpoint_key, None)
                 return result
             except Exception as e:
@@ -469,6 +490,28 @@ class NBADataLoader:
                 if attempt == max_retries - 1:
                     self._nba_endpoint_unavailable_until[endpoint_key] = time.monotonic() + 30
                     raise
+
+    def set_request_budget(self, seconds=None):
+        """Thread-local allowance; clear at request completion, never globally."""
+        self._data_source_state.deadline = None if seconds is None else time.monotonic() + seconds
+
+    def _bounded_timeout(self, timeout):
+        deadline = getattr(self._data_source_state, 'deadline', None)
+        if deadline is None:
+            return timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.1:
+            raise RequestBudgetExceeded('Projection request time budget exhausted')
+        # requests applies this separately to connect and read, so reserve half.
+        return min(timeout, remaining / 2)
+
+    def _budget_sleep(self, delay):
+        deadline = getattr(self._data_source_state, 'deadline', None)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= delay + 0.1:
+                raise RequestBudgetExceeded('Insufficient request time for another retry')
+        time.sleep(delay)
 
     def get_player_id(self, player_name):
         from nba_api.stats.static import players
@@ -1071,7 +1114,7 @@ class NBADataLoader:
         last_error = None
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=timeout)
+                response = requests.get(url, params=params, headers=headers, timeout=self._bounded_timeout(timeout))
                 if response.status_code == 200:
                     return response
                 last_error = DataUnavailableError(
@@ -1080,10 +1123,12 @@ class NBADataLoader:
                 # Authentication and request-shape failures do not improve on retry.
                 if response.status_code in {400, 401, 403, 404, 422}:
                     break
+            except RequestBudgetExceeded:
+                raise
             except Exception as exc:
                 last_error = exc
             if attempt < max_retries - 1:
-                time.sleep(0.25 * (2 ** attempt) + random.uniform(0.0, 0.1))
+                self._budget_sleep(0.25 * (2 ** attempt) + random.uniform(0.0, 0.1))
         raise DataUnavailableError(f"request failed for {url.split('?')[0]}") from last_error
 
     @staticmethod
@@ -1425,8 +1470,12 @@ class NBADataLoader:
             except ValueError:
                 last_date = datetime.strptime(last_game_date_str, "%Y-%m-%d")
 
-            target_date = datetime.combine(_parse_iso_date(as_of), datetime.min.time()) if as_of else datetime.now()
+            target_day = _parse_iso_date(as_of) if as_of else datetime.now(ZoneInfo('America/New_York')).date()
+            target_date = datetime.combine(target_day, datetime.min.time())
             days_diff = (target_date - last_date).days
+            if days_diff <= 0:
+                self.mark_data_degraded('team rest used the neutral assumption because history was not before the game date', source='stats.nba.com')
+                return self.DEFAULT_DAYS_REST
             # Downstream logic only distinguishes back-to-backs from rested
             # players. Cap long breaks (All-Star/offseason) to its validated
             # range instead of rejecting an otherwise valid projection.
@@ -1575,6 +1624,21 @@ class NBADataLoader:
         """Return a fresh slate, bypassing TTL state for pre-wager checks."""
         return self._fetch_games_for_date(date_str)
 
+    @ttl_cache(seconds=60, cache_empty=True)
+    def _get_odds_events(self, api_key):
+        """Share event discovery across games/books, never cache failed responses."""
+        resp = self._retry_http_get(
+            'https://api.the-odds-api.com/v4/sports/basketball_nba/events',
+            params={'apiKey': api_key, 'regions': 'us'}, timeout=12,
+        )
+        try:
+            events = resp.json()
+        except Exception as exc:
+            raise DataUnavailableError('Odds API returned invalid events JSON') from exc
+        if not isinstance(events, list):
+            raise DataUnavailableError('Odds API events response must be a list')
+        return events
+
     @ttl_cache(seconds=300)
     def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel'):
         """
@@ -1593,18 +1657,7 @@ class NBADataLoader:
             raise ValueError("home team, away team, and bookmaker are required")
 
         log.debug(f"Deep-searching odds for {home_team_code} vs {away_team_code} on {bookmaker}...")
-        events_url = "https://api.the-odds-api.com/v4/sports/basketball_nba/events"
-        resp = self._retry_http_get(
-            events_url,
-            params={'apiKey': api_key, 'regions': 'us'},
-            timeout=12,
-        )
-        try:
-            events = resp.json()
-        except Exception as exc:
-            raise DataUnavailableError("Odds API returned invalid events JSON") from exc
-        if not isinstance(events, list):
-            raise DataUnavailableError("Odds API events response must be a list")
+        events = self._get_odds_events(api_key)
 
         team_map = {
             'ATL': 'Hawks', 'BOS': 'Celtics', 'BKN': 'Nets', 'CHA': 'Hornets', 'CHI': 'Bulls',

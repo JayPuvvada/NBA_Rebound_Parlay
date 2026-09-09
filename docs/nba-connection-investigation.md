@@ -1,5 +1,49 @@
 # NBA connection investigation
 
+## Full-slate allowance verification
+
+- Real local Flask Daily Edge for DEN/LAL on 2025-03-14 returned HTTP 200,
+  21 rows, in 75.39 seconds with the 75-second allowance. NBA dashboards and
+  individual requests still failed. Response warned of partial results and
+  historical analysis-only status. Odds calls were disabled for this diagnostic.
+- This is below the browser's 110-second allowance, but remains slow and does
+  not prove live slate or paid odds performance. No browser screenshot verified.
+- Follow-up code bounds retry sleeps, recalculates socket allowance after
+  backoff, and explicitly labels budget exhaustion in partial-result warnings
+  and per-team diagnostics. The live test above preceded these small refinements.
+- Backend regression suite: 201 passing tests.
+
+## Request allowance implementation
+
+- Local predict/Daily Edge requests now initialize a 75-second thread-local
+  upstream allowance, cleared by Flask teardown. NBA and generic fallback HTTP
+  wrappers reduce socket timeouts to the remaining allowance and reject new work
+  once exhausted. Completed team rows are retained and unattempted players are
+  reported as failures instead of continuing through the whole roster.
+- This is cooperative, not a hard wall-clock deadline: DNS, slow streaming,
+  cache waits, direct HTTP call paths, and computation are not forcibly stopped.
+  Full browser latency validation and remaining direct HTTP paths still need work.
+- Added tests for timeout reduction, expiry before networking, reset, thread
+  isolation, and roster-loop termination. 200 backend tests pass.
+- Remaining planned work: shared projection reuse across sportsbook changes,
+  broader diagnostics, early-season policy validation, UI state/freshness,
+  account regression checks, historical evaluation, and documentation cleanup.
+  No deployment or new paid service was performed.
+
+## Daily Edge follow-up
+
+- Full historical DEN/LAL slate testing encountered repeated player-history,
+  identity, and league-dashboard timeouts and exceeded the frontend's 110-second
+  request allowance. No successful full-slate result was captured. Individual
+  successful projections do not establish full-slate reliability.
+- Roster transport failures are isolated per team so the other team's successful
+  rows can survive with a partial-results warning. Both sides failing still
+  returns a source error. These paths have regression coverage.
+- Successfully empty rosters are now also handled explicitly: both empty returns
+  a missing-input error rather than HTTP 200 with an apparently successful empty
+  slate; one empty adds a partial-results warning. No stats are fabricated.
+- Latency remains unresolved; no timeout increase or deployment was performed.
+
 ## Local header comparison (2026-09-08)
 
 - Same Jokic regular-season request, explicitly using completed season 2024-25:

@@ -51,11 +51,13 @@ export function CheatSheet() {
       try {
         const query = new URLSearchParams({ date });
         const response = await fetchJson<GamesResponse>(`/games?${query.toString()}`, { signal: controller.signal }, { timeoutMs: 30_000 });
+        if (controller.signal.aborted) return;
         if (!Array.isArray(response.games)) throw new Error("The games response had an unexpected shape.");
         setGames(response.games);
         if (response.games.length === 0) setEmptySchedule(response.message || `No NBA games found for ${date}.`);
       } catch (error: unknown) {
         if (error instanceof ApiRequestError && error.kind === "aborted") return;
+        if (controller.signal.aborted) return;
         setGamesError(requestMessage(error, "Failed to fetch the NBA schedule."));
       } finally {
         if (!controller.signal.aborted) setLoadingGames(false);
@@ -82,12 +84,14 @@ export function CheatSheet() {
         const query = new URLSearchParams({ team: selectedGame.home, date, book });
         const response = await fetchJson<CheatSheetResponse>(`/cheat-sheet?${query.toString()}`, { signal: controller.signal }, { timeoutMs: 110_000 });
         const normalized = unwrapCheatSheet(response);
+        if (controller.signal.aborted) return;
         setData(normalized.rows);
         setGeneratedAt(normalized.generatedAt || null);
         setOddsStatus(normalized.odds || null);
         setWarnings(normalized.warnings);
       } catch (error: unknown) {
         if (error instanceof ApiRequestError && error.kind === "aborted") return;
+        if (controller.signal.aborted) return;
         setSheetError(requestMessage(error, "Failed to fetch projections."));
       } finally {
         if (!controller.signal.aborted) setLoading(false);

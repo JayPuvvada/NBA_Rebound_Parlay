@@ -58,6 +58,7 @@ def ttl_cache(seconds: float, *, cache_empty: bool = False, ttl_for_value=None):
         store = {}
         in_flight = {}
         lock = threading.RLock()
+        generation = 0
 
         def make_key(args, kwargs):
             if args and hasattr(args[0], "__dict__"):
@@ -100,16 +101,24 @@ def ttl_cache(seconds: float, *, cache_empty: bool = False, ttl_for_value=None):
                     if waiter is None:
                         waiter = threading.Event()
                         in_flight[key] = waiter
+                        started_generation = generation
                         break
 
-                waiter.wait()
+                # A request waiting on another worker's fetch must also honor
+                # its own allowance; abandoning the wait does not cancel the owner.
+                budget_timeout = getattr(type(args[0]), '_bounded_timeout', None) if args else None
+                if callable(budget_timeout):
+                    waiter.wait(timeout=budget_timeout(args[0], 1.0))
+                else:
+                    waiter.wait()
 
             try:
                 value = fn(*args, **kwargs)
                 retention = seconds if ttl_for_value is None else ttl_for_value(value)
                 if retention > 0 and (cache_empty or not _is_empty(value)):
                     with lock:
-                        store[key] = (time.monotonic() + min(seconds, retention), _clone(value))
+                        if started_generation == generation:
+                            store[key] = (time.monotonic() + min(seconds, retention), _clone(value))
                 return value
             finally:
                 with lock:
@@ -118,7 +127,9 @@ def ttl_cache(seconds: float, *, cache_empty: bool = False, ttl_for_value=None):
                         event.set()
 
         def invalidate():
+            nonlocal generation
             with lock:
+                generation += 1
                 store.clear()
 
         wrapper.invalidate = invalidate

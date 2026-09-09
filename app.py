@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from datetime import date as _date, datetime, timezone
 from pathlib import Path
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 from requests.exceptions import RequestException
@@ -219,6 +219,16 @@ def _reset_projection_source_tracking(date_loader):
     reset_method = getattr(type(date_loader), 'reset_data_source_metadata', None)
     if callable(reset_method):
         reset_method(date_loader)
+    if request.path in {'/predict', '/cheat-sheet'} and isinstance(date_loader, NBADataLoader):
+        date_loader.set_request_budget(75)
+        g.budget_loader = date_loader
+
+
+@app.teardown_request
+def _clear_request_budget(_error):
+    budget_loader = getattr(g, 'budget_loader', None)
+    if budget_loader is not None:
+        budget_loader.set_request_budget(None)
 
 
 @app.errorhandler(413)
@@ -1130,8 +1140,11 @@ def cheat_sheet():
         projections = home_results + away_results
         warnings = []
         team_diagnostics = [home_diagnostics, away_diagnostics]
+        if any(diagnostic.get('budget_exhausted') for diagnostic in team_diagnostics):
+            warnings.append('Loading reached the request time limit. Completed results are shown; coverage is incomplete. Retry for missing players.')
         if not projections and any(
-            diagnostic.get('all_failed') for diagnostic in team_diagnostics
+            diagnostic.get('all_failed') or diagnostic.get('empty_roster')
+            for diagnostic in team_diagnostics
         ):
             if any(diagnostic.get('source_error_count', 0) for diagnostic in team_diagnostics):
                 raise DataUnavailableError('Player history sources failed for the selected game')
@@ -1140,7 +1153,7 @@ def cheat_sheet():
                 'code': 'projection_pipeline_failed',
             }), 503
         if any(
-            diagnostic.get('status') in {'partial_failure', 'all_failed'}
+            diagnostic.get('status') in {'partial_failure', 'all_failed', 'empty_roster', 'roster_unavailable'}
             or (diagnostic.get('failed_count') or 0) > 0
             for diagnostic in team_diagnostics
         ):
@@ -1241,6 +1254,7 @@ def cheat_sheet():
                         'attempted_count',
                         'projected_count',
                         'failed_count',
+                        'budget_exhausted',
                     )
                 },
                 'away': {
@@ -1251,6 +1265,7 @@ def cheat_sheet():
                         'attempted_count',
                         'projected_count',
                         'failed_count',
+                        'budget_exhausted',
                     )
                 },
             },

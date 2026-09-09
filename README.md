@@ -73,10 +73,13 @@ Home / landing section
 │   ├── Game selection
 │   ├── Ranked player table for both teams
 │   └── Expandable player analysis
-└── Player Lookup (#lookup)
-    ├── Manual projection form
-    ├── Projection result and analysis panels
-    └── Optional evaluation-ledger save
+├── Player Lookup (#lookup)
+│   ├── Manual projection form
+│   ├── Projection result and analysis panels
+│   └── Save snapshot to My Picks when signed in
+└── My Picks (#picks)
+    ├── Supabase sign-in / beta signup
+    └── Private saved picks and manual outcome review
 ```
 
 ### Landing section
@@ -94,17 +97,20 @@ It explicitly states there is no parlay builder or bet placement.
 
 - Daily Edge is the default tab; `#lookup` opens Player Lookup directly.
 - Tab changes update the URL hash and support browser Back/Forward navigation.
-- Left/Right arrows switch tabs; Home selects Daily Edge and End selects Lookup.
+- Left/Right arrows switch tabs; Home selects Daily Edge and End selects My Picks.
 - Labels, focus rings, selected/expanded states, and status/error announcements
   support keyboard and assistive-technology use.
 - Layouts adapt to smaller screens; the wide Daily Edge table scrolls sideways.
 - Tabs and trend charts load lazily. A rendering error boundary provides a
   recovery screen rather than leaving the entire app blank.
-- Tab contents are unmounted when switching away. Form inputs, loaded results,
-  and selected games are not a saved workspace and may reset when returning.
+- Tab contents are unmounted when switching away. Player Lookup inputs are
+  restored from session storage within the same browser tab, including refresh.
+  Projection results and Daily Edge selections are not restored. Drafts are
+  browser-tab-local, not account-specific saved picks, and contain no credentials.
 
-There is no account/login page, settings page, ledger dashboard, or parlay
-builder in the current interface. Server settings live in environment variables.
+Account controls and private saved picks are in My Picks. There is no separate
+settings page, operator-ledger dashboard, or parlay builder. Server settings
+live in environment variables.
 
 ## 2. Daily Edge
 

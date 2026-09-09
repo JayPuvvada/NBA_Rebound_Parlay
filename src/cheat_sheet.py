@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from requests.exceptions import RequestException
-from src.data_loader import DataUnavailableError
+from src.data_loader import DataUnavailableError, RequestBudgetExceeded, NBADataLoader
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
 
@@ -34,6 +34,7 @@ def _new_diagnostics(team_id, team_abbr):
         "projection_error_count": 0,
         "exception_count": 0,
         "source_error_count": 0,
+        "budget_exhausted": False,
         "failed_count": 0,
         "empty_roster": False,
         "all_failed": False,
@@ -62,7 +63,7 @@ def _add_failure_sample(stats, player, category, detail=None):
 def _finish_diagnostics(stats, results):
     stats["projected_count"] = len(results)
     stats["failed_count"] = stats["projection_error_count"] + stats["exception_count"]
-    stats["all_failed"] = stats["attempted_count"] > 0 and not results
+    stats["all_failed"] = (stats["attempted_count"] > 0 or stats["failed_count"] > 0) and not results
     if stats["empty_roster"]:
         stats["status"] = "empty_roster"
     elif stats["all_failed"]:
@@ -173,6 +174,7 @@ def project_team(
         # Keep a transport failure distinct from a successfully empty roster.
         stats.update(status='roster_unavailable', all_failed=True,
                      exception_count=1, source_error_count=1, failed_count=1)
+        stats['budget_exhausted'] = isinstance(exc, RequestBudgetExceeded)
         _add_failure_sample(stats, team_abbr, 'roster_unavailable', type(exc).__name__)
         _publish_diagnostics(diagnostics, stats)
         return []
@@ -192,6 +194,17 @@ def project_team(
 
     results = []
     for _, row in roster.iterrows():
+        if isinstance(loader, NBADataLoader):
+            try:
+                loader._bounded_timeout(8)
+            except RequestBudgetExceeded:
+                stats['budget_exhausted'] = True
+                # Report unattempted players as missing, retaining finished rows.
+                remaining = len(roster) - stats['attempted_count']
+                stats['exception_count'] += remaining
+                stats['source_error_count'] += remaining
+                _add_failure_sample(stats, team_abbr, 'request_budget_exhausted')
+                break
         pid = row["PLAYER_ID"]
         pname = row["PLAYER"]
         stats["attempted_count"] += 1

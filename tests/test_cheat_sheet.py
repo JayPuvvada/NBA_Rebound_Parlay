@@ -307,6 +307,25 @@ class CheatSheetPersistenceTest(unittest.TestCase):
 
 
 class CheatSheetDiagnosticsTest(unittest.TestCase):
+    def test_expired_budget_skips_remaining_roster_and_reports_failure(self):
+        from unittest.mock import Mock, patch
+        from src.data_loader import NBADataLoader
+        with patch.object(NBADataLoader, '_load_offline_cache'):
+            loader = NBADataLoader()
+        loader.get_team_roster = Mock(return_value=pd.DataFrame([
+            {'PLAYER_ID': 1, 'PLAYER': 'One'},
+            {'PLAYER_ID': 2, 'PLAYER': 'Two'},
+        ]))
+        loader.set_request_budget(-1)
+        engineer = FakeEngineer()
+        diagnostics = {}
+        self.assertEqual(_run({}, loader=loader, engineer=engineer, diagnostics=diagnostics), [])
+        self.assertEqual(engineer.calls, [])
+        self.assertTrue(diagnostics['all_failed'])
+        self.assertEqual(diagnostics['failed_count'], 2)
+        self.assertEqual(diagnostics['attempted_count'], 0)
+        self.assertTrue(diagnostics['budget_exhausted'])
+
     def test_failed_roster_is_reported_without_aborting_other_team(self):
         from unittest.mock import Mock
         from requests.exceptions import ReadTimeout

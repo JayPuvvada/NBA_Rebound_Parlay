@@ -433,6 +433,55 @@ class DataLoaderTest(unittest.TestCase):
 
         self.assertEqual(loader.get_days_rest(1, as_of='2026-09-04'), 14)
 
+    def test_same_day_and_future_rest_history_are_not_treated_as_back_to_back(self):
+        for day in ('2025-03-14', '2025-03-15'):
+            loader = self.make_loader()
+            loader.get_team_gamelog = Mock(return_value=pd.DataFrame([{'GAME_DATE': day}]))
+            self.assertEqual(loader.get_days_rest(1, as_of='2025-03-14'), loader.DEFAULT_DAYS_REST)
+            self.assertEqual(loader.get_data_source_metadata()['status'], 'degraded')
+
+
+    def test_request_budget_caps_timeout_and_clear_restores_default(self):
+        loader = self.make_loader()
+        with patch('src.data_loader.time.monotonic', return_value=100):
+            loader.set_request_budget(6)
+            self.assertEqual(loader._bounded_timeout(8), 3)
+            loader.set_request_budget(None)
+            self.assertEqual(loader._bounded_timeout(8), 8)
+
+    def test_expired_budget_starts_no_network_requests(self):
+        from src.data_loader import RequestBudgetExceeded
+        loader = self.make_loader()
+        loader.set_request_budget(-1)
+        endpoint = Mock()
+        with self.assertRaises(RequestBudgetExceeded):
+            loader._retry_api_call(endpoint)
+        endpoint.assert_not_called()
+        with patch('requests.get') as get:
+            with self.assertRaises(RequestBudgetExceeded):
+                loader._retry_http_get('https://example.invalid')
+            get.assert_not_called()
+
+    def test_request_budget_does_not_leak_between_threads(self):
+        import threading
+        loader = self.make_loader()
+        loader.set_request_budget(-1)
+        results = []
+        thread = threading.Thread(target=lambda: results.append(loader._bounded_timeout(8)))
+        thread.start()
+        thread.join(timeout=2)
+        self.assertEqual(results, [8])
+
+    def test_retry_backoff_does_not_outlive_request_budget(self):
+        from src.data_loader import RequestBudgetExceeded
+        loader = self.make_loader()
+        with patch('src.data_loader.time.monotonic', return_value=100), patch('src.data_loader.time.sleep') as sleep:
+            loader.set_request_budget(0.2)
+            with self.assertRaises(RequestBudgetExceeded):
+                loader._budget_sleep(0.3)
+            sleep.assert_not_called()
+
+
     def test_unusable_rest_history_is_marked_as_estimated(self):
         for frame in (pd.DataFrame(), pd.DataFrame([{'TEAM_ID': 1}]),
                       pd.DataFrame([{'GAME_DATE': 'bad-date'}])):
@@ -520,6 +569,7 @@ class DataLoaderTest(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(result))
 
     def test_odds_cache_refreshes_after_five_minute_safety_window(self):
+        # Book-specific quotes still expire independently of event discovery.
         loader = self.make_loader()
         events = [{
             'id': 'event-cache',
@@ -543,6 +593,36 @@ class DataLoaderTest(unittest.TestCase):
             loader.get_odds_for_game('secret', 'BOS', 'LAL', '2026-01-01')
         self.assertEqual(loader._retry_http_get.call_count, 4)
 
+    def test_event_discovery_is_shared_across_books_and_expires(self):
+        loader = self.make_loader()
+        loader._retry_http_get = Mock(return_value=FakeHTTPResponse([]))
+        with patch('src.cache.time.monotonic', return_value=1000):
+            loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01', bookmaker='fanduel')
+            loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01', bookmaker='draftkings')
+            self.assertEqual(loader._retry_http_get.call_count, 1)
+        with patch('src.cache.time.monotonic', return_value=1061):
+            loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
+        self.assertEqual(loader._retry_http_get.call_count, 2)
+
+    def test_bad_event_response_is_not_cached(self):
+        loader = self.make_loader()
+        loader._retry_http_get = Mock(side_effect=[FakeHTTPResponse({}), FakeHTTPResponse([])])
+        with self.assertRaises(DataUnavailableError):
+            loader._get_odds_events('key')
+        self.assertEqual(loader._get_odds_events('key'), [])
+        self.assertEqual(loader._retry_http_get.call_count, 2)
+
+    def test_league_dashboard_cache_expires_without_worker_restart(self):
+        loader = self.make_loader()
+        key = 'league_team_stats_base_2025-26_current'
+        with patch('src.data_loader.time.monotonic', return_value=100):
+            loader._set_cache(key, pd.DataFrame([{'PACE': 100}]))
+            self.assertIsNotNone(loader._get_from_cache(key))
+        with patch('src.data_loader.time.monotonic', return_value=2800):
+            self.assertIsNone(loader._get_from_cache(key))
+        self.assertNotIn(key, loader._cache)
+
+
     def test_offline_cache_uses_embedded_timestamp_not_mtime(self):
         with tempfile.TemporaryDirectory() as directory:
             cache_path = os.path.join(directory, 'nba_cache.json')
@@ -563,6 +643,21 @@ class DataLoaderTest(unittest.TestCase):
             with patch.object(NBADataLoader, 'OFFLINE_CACHE_FILE', cache_path):
                 loader = NBADataLoader(season='2025-26')
             self.assertEqual(loader._cache, {})
+
+    def test_loading_old_snapshot_does_not_restart_freshness_clock(self):
+        from unittest.mock import mock_open
+        age = NBADataLoader.OFFLINE_CACHE_TTL_SEC - 30
+        payload = {
+            'timestamp': (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(),
+            'season': '2025-26', 'data': self.complete_team_cache(),
+        }
+        payload['data']['rosters'] = {'1': [{'PLAYER_ID': 7, 'PLAYER': 'Test'}]}
+        with patch('builtins.open', mock_open(read_data=json.dumps(payload))), patch('os.path.exists', return_value=True), patch('src.data_loader.time.monotonic', return_value=1000):
+            loader = NBADataLoader(season='2025-26')
+            self.assertIsNotNone(loader._get_from_cache('league_team_stats_base_2025-26'))
+            self.assertGreater(1000 - loader._cache_loaded_at['roster_1_2025-26'], loader.ROSTER_CACHE_TTL_SEC)
+        with patch('src.data_loader.time.monotonic', return_value=1031):
+            self.assertIsNone(loader._get_from_cache('league_team_stats_base_2025-26'))
 
     def test_offline_cache_maps_exact_as_of_dashboard_keys(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { ApiRequestError, fetchJson } from "@/lib/api";
 import { easternToday } from "@/lib/format";
 import type { PredictRequest, PredictResponse } from "@/types/api";
+import { readLookupDraft, writeLookupDraft } from "@/lib/lookup-draft";
 
 type Venue = "auto" | "home" | "away";
 
@@ -17,16 +18,20 @@ function validAmericanOdds(value: number | null): boolean {
 }
 
 export function PredictForm() {
-  const [player, setPlayer] = useState("");
-  const [opponent, setOpponent] = useState("");
-  const [date, setDate] = useState(easternToday);
-  const [spread, setSpread] = useState("");
-  const [line, setLine] = useState("");
-  const [overOdds, setOverOdds] = useState("");
-  const [underOdds, setUnderOdds] = useState("");
-  const [bookmaker, setBookmaker] = useState("");
-  const [matchup, setMatchup] = useState("");
-  const [venue, setVenue] = useState<Venue>("auto");
+  const [draft] = useState(readLookupDraft);
+  const [player, setPlayer] = useState(draft.player || "");
+  const [opponent, setOpponent] = useState(draft.opponent || "");
+  const [date, setDate] = useState(draft.date || easternToday());
+  const [spread, setSpread] = useState(draft.spread || "");
+  const [line, setLine] = useState(draft.line || "");
+  const [overOdds, setOverOdds] = useState(draft.overOdds || "");
+  const [underOdds, setUnderOdds] = useState(draft.underOdds || "");
+  const [bookmaker, setBookmaker] = useState(draft.bookmaker || "");
+  const [matchup, setMatchup] = useState(draft.matchup || "");
+  const [venue, setVenue] = useState<Venue>(draft.venue === 'home' || draft.venue === 'away' ? draft.venue : 'auto');
+  useEffect(() => {
+    writeLookupDraft({ player, opponent, date, spread, line, overOdds, underOdds, bookmaker, matchup, venue });
+  }, [player, opponent, date, spread, line, overOdds, underOdds, bookmaker, matchup, venue]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PredictResponse | null>(null);
@@ -93,9 +98,11 @@ export function PredictForm() {
         },
         { timeoutMs: 110_000 },
       );
+      if (activeRequest.current !== controller || controller.signal.aborted) return;
       setResult(response);
     } catch (requestError: unknown) {
       if (requestError instanceof ApiRequestError && requestError.kind === "aborted") return;
+      if (activeRequest.current !== controller || controller.signal.aborted) return;
       setError(requestError instanceof Error ? requestError.message : "Could not calculate this projection.");
     } finally {
       if (activeRequest.current === controller) {
@@ -130,6 +137,7 @@ export function PredictForm() {
         <CardHeader className="border-b border-zinc-800 pb-5">
           <CardTitle className="flex items-center gap-2 text-xl font-bold">🏀 Player Lookup</CardTitle>
           <p className="mt-1 text-sm text-zinc-400">Check one player's rebounds. Enter your sportsbook's line and odds to compare both sides, or leave them blank for a projection only.</p>
+          <p className="text-xs text-zinc-500">Inputs stay in this browser tab when you switch pages or refresh. They are not saved picks.</p>
         </CardHeader>
         <CardContent className="pt-5">
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -146,6 +154,7 @@ export function PredictForm() {
               <div>
                 <label htmlFor="lookup-date" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Game date</label>
                 <input id="lookup-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} required className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                <p className="mt-1 text-xs text-zinc-500">Past dates are analysis-only. A new season may have no player history yet.</p>
               </div>
             </div>
 
