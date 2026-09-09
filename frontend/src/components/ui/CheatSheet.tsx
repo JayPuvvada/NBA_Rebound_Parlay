@@ -265,6 +265,10 @@ export function CheatSheet() {
           </div>
         ) : data && data.length > 0 && selectedGame ? (
           <div className="overflow-x-auto">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-zinc-400">{data.length} player projections loaded. Check warnings for incomplete coverage.</p>
+              <button type="button" onClick={() => setSheetRetry(value => value + 1)} className="rounded bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Refresh projections</button>
+            </div>
             {renderedGeneratedAt && <p className="mb-3 text-right text-xs text-zinc-600">Generated <time dateTime={generatedAt || undefined}>{renderedGeneratedAt}</time></p>}
             {oddsStatus?.error && (
               <div className="mb-4 rounded-md border border-yellow-900/40 bg-yellow-950/20 p-3 text-sm text-yellow-300" role="status">

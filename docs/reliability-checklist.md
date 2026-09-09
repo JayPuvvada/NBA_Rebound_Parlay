@@ -29,7 +29,19 @@ this work authorizes or performs a Render/Vercel deployment.
 - Cache invalidation during an in-flight fetch no longer repopulates the cache
   with the invalidated result. Already-aborted UI requests never start a fetch;
   structured server errors fall back to a readable message.
-- Backend: 209 tests passing. Frontend: 41 tests passing; production build,
+- Calculated primary player statistics are reused for 60 seconds by player,
+  opponent, date, and season, with defensive copies and provenance replay.
+  Empty/degraded results are not retained; injury eligibility and recommendations
+  are still recomputed. Real Jokic statistics: 0.422s first call, <0.001s repeat.
+- Two historical Daily Edge requests in one process: the second returned HTTP
+  200 with 33 rows in 13.31 seconds. It remained partial/analysis-only, with odds
+  disabled. This is not a controlled cold-vs-warm speed guarantee.
+- Slate processing prioritizes players with quoted markets without dropping the
+  rest of the roster. Results have a refresh button and visible loaded-row count.
+- Backend no longer fabricates quote update times from download times, and
+  the route's freshness gate also rejects missing provider timestamps even when
+  the download is recent. Regression tests cover stale and absent timestamps.
+- Backend: 215 tests passing. Frontend: 41 tests passing; production build,
   TypeScript and lint passed, including explanatory copy and cancellation guards.
 
 ## Still pending
@@ -50,6 +62,16 @@ this work authorizes or performs a Render/Vercel deployment.
 - Deploy only after explicit approval and local verification.
 
 ## External limitations
+
+Current-day check on 2026-09-09: `/games` returned HTTP 200 with zero games
+after ESPN fallback (8.23s; NBA scoreboard timed out). Existing Odds API key
+successfully returned 41 upcoming events, starting October 20. This checks event
+access only, not player props, quote freshness or end-to-end live recommendations.
+
+Follow-up upcoming BOS/DET (2026-10-20), FanDuel lookup returned two player
+rebound markets. The initial probe preceded the backend timestamp fix above;
+its printed update time cannot be trusted as a provider timestamp. This verifies
+market availability, not price freshness or a current-season recommendation.
 
 NBA requests still time out intermittently. Akamai/IP blocking is not proven.
 API-Basketball free access rejected recent-season history in the recorded probe.

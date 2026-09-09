@@ -672,6 +672,12 @@ class RouteContractTests(AppTestCase):
 
     def test_stale_sportsbook_quote_is_diagnostic_only(self):
         stale_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        self._assert_quote_is_diagnostic(stale_time)
+
+    def test_missing_provider_timestamp_is_not_replaced_with_download_time(self):
+        self._assert_quote_is_diagnostic(None)
+
+    def _assert_quote_is_diagnostic(self, stale_time):
         fresh_fetch_time = datetime.now(timezone.utc).isoformat()
         odds = {
             "_meta": {

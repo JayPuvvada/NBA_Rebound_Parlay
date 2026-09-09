@@ -566,6 +566,9 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(quote['odds'], -115)  # legacy field remains Over only
         self.assertEqual(result['_meta']['home_spread'], -4.5)
         self.assertEqual(result['_meta']['event_id'], 'event-1')
+        self.assertIsNone(result['_meta']['updated_at'])
+        self.assertIsNone(quote['over']['updated_at'])
+        self.assertIsNotNone(quote['over']['fetched_at'])
         self.assertNotIn('secret', json.dumps(result))
 
     def test_odds_cache_refreshes_after_five_minute_safety_window(self):

@@ -307,6 +307,12 @@ class CheatSheetPersistenceTest(unittest.TestCase):
 
 
 class CheatSheetDiagnosticsTest(unittest.TestCase):
+    def test_quoted_players_are_processed_first_without_dropping_others(self):
+        engineer = FakeEngineer({1: 4.0, 2: 8.0})
+        _run({'two': {'over': {'line': 7.5, 'odds': -110}}},
+             loader=FakeLoader([(1, 'One'), (2, 'Two')]), engineer=engineer)
+        self.assertEqual([call[0] for call in engineer.calls], [2, 1])
+
     def test_expired_budget_skips_remaining_roster_and_reports_failure(self):
         from unittest.mock import Mock, patch
         from src.data_loader import NBADataLoader

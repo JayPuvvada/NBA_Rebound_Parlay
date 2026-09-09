@@ -1775,7 +1775,7 @@ class NBADataLoader:
                         or (-100 < price < 100)
                     ):
                         continue
-                    quote_updated_at = market.get('last_update') or book_updated_at or fetched_at
+                    quote_updated_at = market.get('last_update') or book_updated_at
                     normalized = normalize_name(player_name)
                     player_sides.setdefault(normalized, {})[side_name.lower()] = {
                         'line': point,
@@ -1823,7 +1823,7 @@ class NBADataLoader:
             'book': selected_book_title,
             'book_key': bookmaker,
             'fetched_at': fetched_at,
-            'updated_at': book_updated_at or fetched_at,
+            'updated_at': book_updated_at,
             'source': 'the-odds-api',
             'commence_time': target_event.get('commence_time'),
             'home_spread': home_spread,

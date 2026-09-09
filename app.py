@@ -1164,7 +1164,6 @@ def cheat_sheet():
         max_odds_age = _max_actionable_odds_age_seconds()
         stale_quote_count = 0
         fresh_quote_count = 0
-        snapshot_timestamp = odds_meta.get('fetched_at')
         provider_snapshot_timestamp = odds_meta.get('updated_at')
         for row in projections:
             if row.get('line') is None or row.get('american_odds') is None:
@@ -1176,7 +1175,6 @@ def cheat_sheet():
             quote_timestamp = (
                 row.get('odds_updated_at')
                 or provider_snapshot_timestamp
-                or snapshot_timestamp
             )
             quote_age = _odds_timestamp_age_seconds(quote_timestamp)
             quote_is_fresh = quote_age is not None and quote_age <= max_odds_age

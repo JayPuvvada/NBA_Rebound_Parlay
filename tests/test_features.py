@@ -40,6 +40,65 @@ class PositionNormalizationTest(unittest.TestCase):
 
 
 class PlayerStatsTest(unittest.TestCase):
+    def test_stat_cache_reuses_inputs_but_not_mutable_results_or_other_dates(self):
+        from src.data_loader import NBADataLoader
+        from unittest.mock import patch
+        with patch.object(NBADataLoader, '_load_offline_cache'):
+            loader = NBADataLoader(season='2025-26')
+        engineer = FeatureEngineer(loader)
+        engineer._compute_player_stats = Mock(return_value={'reb_mean': 10})
+        first = engineer.get_player_stats(1, as_of_date='2026-01-01')
+        first['reb_mean'] = 99
+        self.assertEqual(engineer.get_player_stats(1, as_of_date='2026-01-01')['reb_mean'], 10)
+        self.assertEqual(engineer._compute_player_stats.call_count, 1)
+        engineer.get_player_stats(1, as_of_date='2026-01-02')
+        self.assertEqual(engineer._compute_player_stats.call_count, 2)
+
+    def test_stat_cache_does_not_hide_fallback_or_unrelated_limitations(self):
+        from src.data_loader import NBADataLoader
+        from unittest.mock import patch
+        with patch.object(NBADataLoader, '_load_offline_cache'):
+            loader = NBADataLoader(season='2025-26')
+        engineer = FeatureEngineer(loader)
+        def degraded(*args):
+            loader.mark_data_degraded('fallback stats')
+            return {'reb_mean': 10}
+        engineer._compute_player_stats = Mock(side_effect=degraded)
+        loader.mark_data_degraded('rest estimated')
+        engineer.get_player_stats(1)
+        self.assertIn('rest estimated', loader.get_data_source_metadata()['limitations'])
+        self.assertIn('fallback stats', loader.get_data_source_metadata()['limitations'])
+        loader.reset_data_source_metadata()
+        engineer.get_player_stats(1)
+        self.assertEqual(engineer._compute_player_stats.call_count, 2)
+
+    def test_stat_cache_expires_and_keeps_primary_hits_from_clearing_request_warnings(self):
+        from src.data_loader import NBADataLoader
+        from unittest.mock import patch
+        with patch.object(NBADataLoader, '_load_offline_cache'):
+            loader = NBADataLoader(season='2025-26')
+        engineer = FeatureEngineer(loader)
+        engineer._compute_player_stats = Mock(return_value={'reb_mean': 10})
+        with patch('src.cache.time.monotonic', return_value=100):
+            engineer.get_player_stats(1)
+            loader.mark_data_degraded('rest estimated')
+            engineer.get_player_stats(1)
+            self.assertEqual(engineer._compute_player_stats.call_count, 1)
+            self.assertIn('rest estimated', loader.get_data_source_metadata()['limitations'])
+        with patch('src.cache.time.monotonic', return_value=161):
+            engineer.get_player_stats(1)
+        self.assertEqual(engineer._compute_player_stats.call_count, 2)
+
+    def test_missing_stats_are_not_cached(self):
+        from src.data_loader import NBADataLoader
+        from unittest.mock import patch
+        with patch.object(NBADataLoader, '_load_offline_cache'):
+            loader = NBADataLoader(season='2025-26')
+        engineer = FeatureEngineer(loader)
+        engineer._compute_player_stats = Mock(side_effect=[None, {'reb_mean': 10}])
+        self.assertIsNone(engineer.get_player_stats(1))
+        self.assertEqual(engineer.get_player_stats(1), {'reb_mean': 10})
+
     def test_empty_history_is_not_reported_as_unknown_player(self):
         loader = Mock()
         loader.get_player_gamelog.return_value = pd.DataFrame()

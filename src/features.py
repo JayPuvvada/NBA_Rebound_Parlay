@@ -7,6 +7,7 @@ from numbers import Real
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from src.data_loader import NBADataLoader
+from src.cache import ttl_cache
 from src.utils import normalize_name, get_logger, current_season
 
 log = get_logger('features')
@@ -259,6 +260,30 @@ class FeatureEngineer:
         return notes
 
     def get_player_stats(self, player_id, opponent_abbrev=None, as_of_date=None):
+        # Cache statistical inputs, not recommendations or injury eligibility.
+        # Canonical arguments share work between lookup and slate requests.
+        if not isinstance(self.loader, NBADataLoader):
+            return self._compute_player_stats(player_id, opponent_abbrev, as_of_date)
+        result, metadata = self._cached_player_stats(player_id, opponent_abbrev, as_of_date, self.loader.season)
+        self.loader._merge_data_source_metadata(metadata)
+        return result
+
+    def _bounded_timeout(self, timeout):
+        return self.loader._bounded_timeout(timeout)
+
+    @ttl_cache(60, ttl_for_value=lambda value: 60 if value[0] is not None and value[1]['status'] == 'primary' else 0)
+    def _cached_player_stats(self, player_id, opponent_abbrev, as_of_date, season):
+        previous = self.loader.get_data_source_metadata()
+        self.loader.reset_data_source_metadata()
+        try:
+            result = self._compute_player_stats(player_id, opponent_abbrev, as_of_date)
+            return result, self.loader.get_data_source_metadata()
+        finally:
+            current = self.loader.get_data_source_metadata()
+            self.loader._data_source_state.metadata = previous
+            self.loader._merge_data_source_metadata(current)
+
+    def _compute_player_stats(self, player_id, opponent_abbrev=None, as_of_date=None):
         """
         Fetches player logs and splits rebounding into OREB/DREB rates.
         Also calculates historical rates against the specific opponent.

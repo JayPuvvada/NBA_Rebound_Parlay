@@ -185,6 +185,11 @@ def project_team(
         return []
     stats["roster_count"] = len(roster)
     player_odds = player_odds if isinstance(player_odds, dict) else {}
+    # Under a bounded request, compute players with offered rebound markets
+    # first. Keep every other player queued; never fabricate or drop history.
+    if 'PLAYER' in roster.columns and player_odds:
+        priority = roster['PLAYER'].map(lambda name: normalize_name(str(name)) in player_odds)
+        roster = roster.iloc[sorted(range(len(roster)), key=lambda index: not bool(priority.iloc[index]))]
 
     active_ledger = ledger
     if record_predictions and active_ledger is None:
