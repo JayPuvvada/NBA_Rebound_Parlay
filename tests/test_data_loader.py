@@ -433,6 +433,21 @@ class DataLoaderTest(unittest.TestCase):
 
         self.assertEqual(loader.get_days_rest(1, as_of='2026-09-04'), 14)
 
+    def test_preseason_history_is_separate_and_respects_cutoff(self):
+        loader = self.make_loader()
+        loader._retry_api_call = Mock(return_value=FakeEndpointResponse(pd.DataFrame([
+            {'GAME_ID': '0011', 'GAME_DATE': '2025-10-05', 'MIN': 20, 'REB': 5},
+            {'GAME_ID': '0012', 'GAME_DATE': '2025-10-10', 'MIN': 20, 'REB': 9},
+        ])))
+        frame = loader.get_preseason_player_gamelog(203999, as_of='2025-10-10')
+        self.assertEqual(frame['REB'].tolist(), [5])
+        self.assertTrue(frame.attrs['analysis_only'])
+        self.assertEqual(loader._retry_api_call.call_args.kwargs['season_type_all_star'], 'Pre Season')
+        self.assertEqual(loader._retry_api_call.call_args.kwargs['season'], '2025-26')
+        self.assertEqual(loader._retry_api_call.call_args.kwargs['date_to_nullable'], '10/09/2025')
+        with self.assertRaises(ValueError):
+            loader.get_preseason_player_gamelog(1.5)
+
     def test_same_day_and_future_rest_history_are_not_treated_as_back_to_back(self):
         for day in ('2025-03-14', '2025-03-15'):
             loader = self.make_loader()
@@ -595,6 +610,60 @@ class DataLoaderTest(unittest.TestCase):
         with patch('src.cache.time.monotonic', return_value=1301):
             loader.get_odds_for_game('secret', 'BOS', 'LAL', '2026-01-01')
         self.assertEqual(loader._retry_http_get.call_count, 4)
+
+    def test_odds_parser_ignores_other_books_and_malformed_quotes(self):
+        loader = self.make_loader()
+        events = [{'id': 'e', 'home_team': 'Boston Celtics', 'away_team': 'Los Angeles Lakers', 'commence_time': '2026-01-02T00:30:00Z'}]
+        good = {'name': 'Over', 'description': 'Valid Player', 'point': 7.5, 'price': -110}
+        props = {'bookmakers': [
+            {'key': 'draftkings', 'title': 'Wrong Book', 'markets': [{'key': 'player_rebounds', 'outcomes': [{**good, 'description': 'Wrong Player'}]}]},
+            {'key': 'fanduel', 'title': 'FanDuel', 'markets': [{'key': 'player_rebounds', 'outcomes': [
+                None, 'bad', {**good, 'description': 123},
+                {**good, 'description': 'Infinite', 'price': float('inf')},
+                {**good, 'description': 'Boolean', 'point': True}, good,
+            ]}]},
+        ]}
+        loader._retry_http_get = Mock(side_effect=[FakeHTTPResponse(events), FakeHTTPResponse(props)])
+        result = loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
+        self.assertEqual(set(result), {'valid player', '_meta'})
+        self.assertEqual(result['valid player']['book'], 'FanDuel')
+
+    def test_rate_limit_does_not_trigger_immediate_retry(self):
+        from src.data_loader import ProviderHTTPError
+        loader = self.make_loader()
+        with patch('requests.get', return_value=Mock(status_code=429)) as get, patch('src.data_loader.time.sleep') as sleep:
+            with self.assertRaises(ProviderHTTPError) as failure:
+                loader._retry_http_get('https://example.invalid', max_retries=3)
+        self.assertEqual(failure.exception.status_code, 429)
+        self.assertEqual(get.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_odds_market_fallback_only_retries_request_shape_errors(self):
+        from src.data_loader import ProviderHTTPError
+        events = [{'id': 'e', 'home_team': 'Boston Celtics', 'away_team': 'Los Angeles Lakers', 'commence_time': '2026-01-02T00:30:00Z'}]
+        for status in (400, 422, 401, 403, 429, 503):
+            with self.subTest(status=status):
+                loader = self.make_loader()
+                loader._get_odds_events = Mock(return_value=events)
+                loader._retry_http_get = Mock(side_effect=[ProviderHTTPError(status), FakeHTTPResponse({'bookmakers': []})])
+                if status in (400, 422):
+                    loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
+                    self.assertEqual(loader._retry_http_get.call_count, 2)
+                else:
+                    with self.assertRaises(ProviderHTTPError):
+                        loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
+                    self.assertEqual(loader._retry_http_get.call_count, 1)
+
+    def test_malformed_market_containers_are_provider_errors_not_empty_prices(self):
+        events = [{'id': 'e', 'home_team': 'Boston Celtics', 'away_team': 'Los Angeles Lakers', 'commence_time': '2026-01-02T00:30:00Z'}]
+        for markets in (None, [{'key': 'player_rebounds', 'outcomes': None}]):
+            loader = self.make_loader()
+            loader._retry_http_get = Mock(side_effect=[FakeHTTPResponse(events), FakeHTTPResponse({
+                'bookmakers': [{'key': 'fanduel', 'markets': markets}],
+            })])
+            with self.assertRaises(DataUnavailableError):
+                loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
+
 
     def test_event_discovery_is_shared_across_books_and_expires(self):
         loader = self.make_loader()

@@ -41,7 +41,35 @@ this work authorizes or performs a Render/Vercel deployment.
 - Backend no longer fabricates quote update times from download times, and
   the route's freshness gate also rejects missing provider timestamps even when
   the download is recent. Regression tests cover stale and absent timestamps.
-- Backend: 215 tests passing. Frontend: 41 tests passing; production build,
+- Odds parsing explicitly filters the requested sportsbook. Malformed quote
+  entries (including infinite prices, boolean lines and non-string player names)
+  are skipped without losing valid quotes; malformed market containers surface
+  as provider errors rather than appearing to be legitimate empty markets.
+- Provider HTTP 429 stops immediate retries. Alternate odds-market requests
+  occur only after HTTP 400/422, not authentication failures, rate limits,
+  exhausted request budgets, or server outages. Status-bearing exceptions omit
+  credentials and response bodies. Regression coverage verifies retry counts.
+- Recognized preseason schedules are labeled, and both routes force analysis-only
+  output for them. Historical ESPN verification identified five preseason games.
+  See [preseason readiness](preseason-readiness.md) for the remaining modeling gaps.
+- Separate preseason history and a read-only prior-season input audit are
+  implemented; both samples were retrieved successfully for historical Jokic.
+  The live projection formula has not been switched to an unvalidated blend.
+- Optional walk-forward preseason baseline evaluation reports errors using only
+  earlier appearances, with leakage/duplicate/schema tests. Real Jokic historical
+  run evaluated three games; too small to establish predictive quality.
+- Batch preseason audit supports repeated player arguments, reports unavailable
+  samples, and pools errors by game. Three-player historical run evaluated 10
+  games with primary data: exploratory MAE 2.096 vs naive 2.863, but worse for
+  Curry. This is not sufficient validation to enable preseason recommendations.
+- Preseason evaluation reports excluded rows and skipped-game reasons, rejects
+  overlapping source samples, and normalizes IDs before duplicate checks.
+- Batch audits distinguish empty histories from source failures and report
+  partial player coverage alongside pooled error scores.
+- Historical Player Lookup uses its as-of historical team before requesting
+  current roster information, avoiding an unnecessary live dependency when
+  historical team data exists. Current/future lookups retain the roster check.
+- Backend: 239 tests passing. Frontend: 41 tests passing; production build,
   TypeScript and lint passed, including explanatory copy and cancellation guards.
 
 ## Still pending

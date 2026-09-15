@@ -537,11 +537,7 @@ def predict():
                 'code': 'player_not_found',
             }), 404
 
-        p_info = date_loader.get_common_player_info(pid)
-        if p_info.empty:
-            return jsonify({'error': 'Player information is unavailable.', 'code': 'player_info_unavailable'}), 503
-
-        team_id = p_info.iloc[0]['TEAM_ID']
+        team_id = None
         if parsed_date < _date.fromisoformat(eastern_today()):
             # CommonPlayerInfo reflects the player's current roster. Historical
             # forecasts must instead use the newest game strictly before the
@@ -551,6 +547,11 @@ def predict():
             )
             if historical_stats and historical_stats.get('team_id'):
                 team_id = historical_stats['team_id']
+        if team_id is None:
+            p_info = date_loader.get_common_player_info(pid)
+            if p_info.empty:
+                return jsonify({'error': 'Player information is unavailable.', 'code': 'player_info_unavailable'}), 503
+            team_id = p_info.iloc[0]['TEAM_ID']
         if not team_id:
             return jsonify({'error': 'The player is not on an active NBA roster.', 'code': 'player_not_rostered'}), 422
 
@@ -636,6 +637,9 @@ def predict():
             limitations.append(
                 'game is live, final, or has an unknown status; projection is analysis-only'
             )
+        if scheduled_game and scheduled_game.get('is_preseason'):
+            prediction_eligible = False
+            limitations.append('Preseason rotations and minutes are not validated by this model; analysis-only.')
         projection_metadata.update({
             'prediction_eligible': prediction_eligible,
             'limitations': list(dict.fromkeys(limitations)),
@@ -1021,6 +1025,7 @@ def get_games():
                 'status': g.get('status'),
                 'status_text': g.get('status_text'),
                 'game_time': g.get('game_time'),
+                'is_preseason': bool(g.get('is_preseason')),
             }
             for g in raw_games
         ]
@@ -1196,6 +1201,12 @@ def cheat_sheet():
                 'One or more sportsbook quotes were stale or lacked a trustworthy '
                 'timestamp; affected rows are not actionable.'
             )
+
+        if selected_game.get('is_preseason'):
+            warning = 'Preseason rotations and minutes are not validated by this model; all rows are analysis-only.'
+            warnings.append(warning)
+            for row in projections:
+                _downgrade_cheat_row(row, 'PRESEASON_UNVALIDATED', warning, prediction_eligible=False)
 
         if not _is_pregame(selected_game):
             warning = (

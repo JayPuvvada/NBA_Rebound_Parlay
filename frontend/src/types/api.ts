@@ -3,6 +3,7 @@ export type Direction = "OVER" | "UNDER";
 export type TierColor = "green" | "blue" | "purple" | "yellow" | "red" | "gray";
 
 export interface Game {
+  is_preseason?: boolean;
   id?: string;
   game_id?: string;
   date?: string;

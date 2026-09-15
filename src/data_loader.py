@@ -31,6 +31,14 @@ class RequestBudgetExceeded(DataUnavailableError):
     """No more upstream work should be started for this request."""
 
 
+class ProviderHTTPError(DataUnavailableError):
+    """Upstream status without URLs, credentials, or response bodies."""
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f'Upstream provider returned HTTP {status_code}')
+
+
 def _source_cache(seconds, *, cache_empty=False):
     """Cache data together with its provenance, replaying it on every read."""
     def decorate(method):
@@ -825,6 +833,22 @@ class NBADataLoader:
 
         return self._prepare_gamelog(df, as_of)
 
+    @_source_cache(seconds=300)
+    def get_preseason_player_gamelog(self, player_id, as_of=None):
+        """Separate diagnostic history; never merge into regular-season caches."""
+        if isinstance(player_id, bool) or not isinstance(player_id, Real) or not math.isfinite(float(player_id)) or int(player_id) != player_id or player_id <= 0:
+            raise ValueError('player_id must be a positive integer')
+        season = _season_for_date(as_of) if as_of else self.season
+        response = self._retry_api_call(
+            playergamelog.PlayerGameLog, player_id=int(player_id), season=season,
+            season_type_all_star='Pre Season', date_to_nullable=_date_to_parameter(as_of),
+        )
+        frame = self._first_frame(response, 'preseason player history')
+        frame = self._prepare_gamelog(frame, as_of)
+        frame.attrs['season_type'] = 'Pre Season'
+        frame.attrs['analysis_only'] = True
+        return frame
+
     @ttl_cache(seconds=2700)
     def get_team_gamelog(self, team_id, as_of=None):
         """Fetch a team's logs, optionally restricted to games before ``as_of``."""
@@ -1117,11 +1141,9 @@ class NBADataLoader:
                 response = requests.get(url, params=params, headers=headers, timeout=self._bounded_timeout(timeout))
                 if response.status_code == 200:
                     return response
-                last_error = DataUnavailableError(
-                    f"HTTP {response.status_code} from {url.split('?')[0]}"
-                )
+                last_error = ProviderHTTPError(response.status_code)
                 # Authentication and request-shape failures do not improve on retry.
-                if response.status_code in {400, 401, 403, 404, 422}:
+                if response.status_code in {400, 401, 403, 404, 422, 429}:
                     break
             except RequestBudgetExceeded:
                 raise
@@ -1129,6 +1151,8 @@ class NBADataLoader:
                 last_error = exc
             if attempt < max_retries - 1:
                 self._budget_sleep(0.25 * (2 ** attempt) + random.uniform(0.0, 0.1))
+        if isinstance(last_error, ProviderHTTPError):
+            raise last_error
         raise DataUnavailableError(f"request failed for {url.split('?')[0]}") from last_error
 
     @staticmethod
@@ -1546,6 +1570,7 @@ class NBADataLoader:
                 'game_time': status_type.get('shortDetail'),
                 'game_date_est': event_date,
                 'source': 'espn',
+                'is_preseason': (event.get('season') or {}).get('type') == 1,
             })
         self.mark_data_degraded(
             'stats.nba.com schedule was unavailable; schedule verification used ESPN'
@@ -1604,6 +1629,7 @@ class NBADataLoader:
             seen_game_ids.add(gid)
             games.append({
                 'game_id': gid,
+                'is_preseason': str(gid).startswith('001'),
                 'home_id': hid,
                 'away_id': vid,
                 'status': get_col(row, 'GAME_STATUS_ID'),
@@ -1712,7 +1738,9 @@ class NBADataLoader:
         }
         try:
             p_resp = self._retry_http_get(props_url, params=props_params, timeout=15)
-        except DataUnavailableError:
+        except ProviderHTTPError as exc:
+            if exc.status_code not in {400, 422}:
+                raise
             # Some Odds API plans/providers reject mixed prop + game markets.
             # Preserve prop availability and mark spread as unavailable.
             log.info("Combined props/spread request unavailable; retrying player props only.")
@@ -1736,16 +1764,23 @@ class NBADataLoader:
             raise DataUnavailableError("Odds API bookmakers field must be a list")
 
         for book in bookmakers:
-            if not isinstance(book, dict):
+            if not isinstance(book, dict) or book.get('key') != bookmaker:
                 continue
             selected_book_title = book.get('title') or selected_book_title
             book_updated_at = book.get('last_update') or book_updated_at
-            for market in book.get('markets', []):
+            markets = book.get('markets', [])
+            if not isinstance(markets, list):
+                raise DataUnavailableError('Odds API markets field must be a list')
+            for market in markets:
                 if not isinstance(market, dict):
                     continue
                 outcomes = market.get('outcomes', [])
+                if not isinstance(outcomes, list):
+                    raise DataUnavailableError('Odds API outcomes field must be a list')
                 if market.get('key') == 'spreads':
                     for outcome in outcomes:
+                        if not isinstance(outcome, dict):
+                            continue
                         spread_point = _finite_number(outcome.get('point'), minimum=-50, maximum=50)
                         if outcome.get('name') == target_event.get('home_team'):
                             home_spread = spread_point
@@ -1755,17 +1790,21 @@ class NBADataLoader:
                 if market.get('key') != 'player_rebounds':
                     continue
                 for outcome in outcomes:
+                    if not isinstance(outcome, dict):
+                        continue
                     side_name = str(outcome.get('name', '')).strip().title()
                     player_name = outcome.get('description')
-                    if side_name not in {'Over', 'Under'} or not player_name:
+                    if side_name not in {'Over', 'Under'} or not isinstance(player_name, str) or not player_name.strip():
                         continue
                     point = outcome.get('point')
                     price = outcome.get('price')
+                    if isinstance(point, bool) or isinstance(price, bool):
+                        continue
                     try:
                         point = float(point)
                         price_float = float(price)
                         price = int(price_float)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         continue
                     if (
                         not math.isfinite(point)

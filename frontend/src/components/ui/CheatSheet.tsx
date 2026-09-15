@@ -235,6 +235,7 @@ export function CheatSheet() {
               return (
                 <button key={game.id || game.game_id || `${game.away}-${game.home}`} type="button" onClick={() => selectGame(game)} aria-pressed={selected} className={`rounded-full border px-3 py-1.5 text-xs transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${selected ? "border-emerald-500 bg-emerald-600/20 text-emerald-400 shadow-lg shadow-emerald-900/20" : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-300"}`}>
                   {game.away} @ {game.home}
+                  {game.is_preseason ? ' · Preseason' : ''}
                 </button>
               );
             })}
@@ -256,6 +257,7 @@ export function CheatSheet() {
           <div className="flex h-64 w-full flex-col items-center justify-center text-zinc-500"><span className="mb-3 text-4xl" aria-hidden="true">📊</span><p>Select a game above to see projections.</p></div>
         )}
 
+        {selectedGame?.is_preseason && <p className="mb-4 rounded border border-amber-800 p-3 text-sm text-amber-200">Preseason: this model has not been validated for preseason rotations or minutes. Any available projections are analysis-only; new-season history may be empty.</p>}
         {loading ? (
           <div className="flex h-64 w-full flex-col items-center justify-center text-center text-zinc-400" role="status"><Loader2 className="mb-4 h-8 w-8 animate-spin text-emerald-500" aria-hidden="true" /><p>Loading player data and available sportsbook prices…</p><p className="mt-2 text-xs text-zinc-600">First loads can be slow. Availability depends on the data providers.</p></div>
         ) : sheetError ? (

@@ -178,6 +178,17 @@ class ValidationTests(AppTestCase):
 
 
 class PredictContractTests(AppTestCase):
+    def test_preseason_lookup_is_analysis_only_even_with_eligible_model_inputs(self):
+        game = dict(self.loader.get_games_for_date(None)[0], is_preseason=True)
+        with patch.object(self.loader, 'get_games_for_date_fresh', return_value=[game]):
+            response = self.client.post('/predict', json={
+                'player': 'Test Player', 'opponent': 'BOS',
+                'date': app_module.eastern_today(), 'home_game': False,
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()['prediction_eligible'])
+        self.assertTrue(any('Preseason' in text for text in response.get_json()['limitations']))
+
     def test_nba_stats_connection_failure_has_actionable_error(self):
         with patch.object(
             self.loader,
@@ -189,7 +200,7 @@ class PredictContractTests(AppTestCase):
                 json={
                     "player": "Test Player",
                     "opponent": "BOS",
-                    "date": "2026-01-15",
+                    "date": app_module.eastern_today(),
                     "home_game": False,
                 },
             )
@@ -246,6 +257,35 @@ class PredictContractTests(AppTestCase):
         payload = response.get_json()
         self.assertEqual(payload["code"], "projection_service_unavailable")
         self.assertNotIn("could not convert", payload["error"].lower())
+
+    def test_historical_lookup_does_not_require_current_player_info(self):
+        with patch.object(self.loader, 'get_common_player_info',
+                          side_effect=RequestsConnectionError('unavailable')) as info:
+            response = self.client.post('/predict', json={
+                'player': 'Test Player', 'opponent': 'BOS',
+                'date': '2026-01-15', 'home_game': False})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()['team_id'], DAL_ID)
+        info.assert_not_called()
+
+    def test_current_lookup_still_requires_current_player_info(self):
+        with patch.object(self.loader, 'get_common_player_info', return_value=pd.DataFrame()) as info:
+            response = self.client.post('/predict', json={
+                'player': 'Test Player', 'opponent': 'BOS',
+                'date': app_module.eastern_today(), 'home_game': False})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'player_info_unavailable')
+        info.assert_called_once()
+
+    def test_historical_lookup_without_team_history_keeps_info_fallback(self):
+        with patch.object(self.engineer, 'get_player_stats', return_value={}), \
+                patch.object(self.loader, 'get_common_player_info', return_value=pd.DataFrame()) as info:
+            response = self.client.post('/predict', json={
+                'player': 'Test Player', 'opponent': 'BOS',
+                'date': '2026-01-15', 'home_game': False})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'player_info_unavailable')
+        info.assert_called_once()
 
     def test_postponed_abbreviation_is_not_pregame(self):
         postponed = dict(
@@ -782,6 +822,13 @@ class RouteContractTests(AppTestCase):
 
     def test_cheat_sheet_live_game_forces_every_row_to_no_bet(self):
         live_game = dict(self.loader.get_games_for_date(None)[0], status=3, status_text="Final")
+        self._assert_game_disables_recommendations(live_game)
+
+    def test_preseason_pregame_also_disables_recommendations(self):
+        game = dict(self.loader.get_games_for_date(None)[0], status=1, is_preseason=True)
+        self._assert_game_disables_recommendations(game)
+
+    def _assert_game_disables_recommendations(self, live_game):
         row = {
             "player": "A",
             "projection": 8.0,
