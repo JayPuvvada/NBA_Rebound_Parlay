@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import type { SavedPick, PickResult } from "./personal-picks";
+import { isSavedPick } from "./personal-picks";
 
 export const PICK_COLUMNS = "id,player,opponent,date,projection,direction,line,odds,bookmaker,savedAt,result,demo";
 export function pickInsert(pick: SavedPick, userId: string) {
@@ -17,6 +18,7 @@ export class SupabaseAccount {
   private view: AccountView;
   private user: User | null = null;
   private generation = 0;
+  private identityGeneration = 0;
   private changing = false;
   private listeners = new Set<() => void>();
   private client: SupabaseClient | null;
@@ -28,7 +30,7 @@ export class SupabaseAccount {
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(value: Partial<AccountView>) { this.view = { ...this.view, ...value }; this.listeners.forEach(listener => listener()); }
   private identify(user: User | null) {
-    if (user?.id !== this.user?.id) { ++this.generation; this.update({ picks: [], error: "" }); }
+    if (user?.id !== this.user?.id) { ++this.generation; ++this.identityGeneration; this.update({ picks: [], error: "" }); }
     this.user = user;
     this.update({ signedIn: !!user, username: user?.email || "", ...(!user ? { picks: [], busy: false } : {}) });
   }
@@ -65,7 +67,10 @@ export class SupabaseAccount {
         const result = await this.client.from("app_saved_picks").select(PICK_COLUMNS).eq("user_id", userId)
           .order("savedAt", { ascending: false }).order("id").range(offset, offset + 499);
         if (result.error) throw result.error;
-        picks.push(...result.data as SavedPick[]);
+        if (!Array.isArray(result.data) || !result.data.every(isSavedPick)) {
+          throw Error('Saved-pick data has an unexpected format. Refresh to retry; no records have been deleted.');
+        }
+        picks.push(...result.data);
         if (result.data.length < 500) break;
       }
       if (isCurrent()) this.update({ picks, busy: false, error: "" });
@@ -133,11 +138,15 @@ export class SupabaseAccount {
     const userId = this.user.id;
     const current = ++this.generation;
     this.update({ busy: true, error: "" });
+    const identity = this.identityGeneration;
     try {
       const result = await operation(this.client, userId);
       if (result.error && !(duplicateOkay && result.error.code === "23505")) throw result.error;
-      if (current === this.generation && this.user?.id === userId) await this.load();
-      return true;
+      if (current !== this.generation || this.user?.id !== userId) return false;
+      await this.load();
+      // A write can succeed for its original owner while the visible account
+      // changes during the reload. Do not report it as the new user's save.
+      return this.user?.id === userId && identity === this.identityGeneration;
     } catch (error) { if (current === this.generation) this.fail(error); return false; }
     finally {
       this.changing = false;

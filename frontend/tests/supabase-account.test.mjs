@@ -3,7 +3,7 @@ import { before, after, test } from 'node:test';
 import { createServer } from 'vite';
 let server, SupabaseAccount, pickInsert, supabaseConfig;
 before(async () => {
-  server = await createServer({ server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
+  server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
   ({ SupabaseAccount, pickInsert } = await server.ssrLoadModule('/src/lib/supabase-account.ts'));
   ({ supabaseConfig } = await server.ssrLoadModule('/src/lib/supabase.ts'));
 });
@@ -12,7 +12,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 const pick = { id: 'quote', player: 'Jokic', opponent: 'LAL', date: '2026-10-20', projection: 13.3,
   direction: 'OVER', line: 12.5, odds: -110, bookmaker: 'Sample', demo: true, result: 'Pending', savedAt: 'now' };
 function fakeClient() {
-  let user = null, callback, hold, failure = null;
+  let user = null, callback, hold, holdWrite, failure = null;
   const rows = new Map();
   const calls = [];
   const emit = id => { user = id ? { id, email: id + '@example.com' } : null; callback?.('SIGNED_IN', user ? { user } : null); };
@@ -53,13 +53,14 @@ function fakeClient() {
           if (operation === 'update') rows.set(owner, records.map(p=>p.id===filters.id?{...p,...payload}:p));
           if (operation === 'delete') rows.set(owner, records.filter(p=>p.id!==filters.id));
           const result = { error: null, data: records.slice(first,last+1) };
+          if (holdWrite && operation !== 'select') { const promise=holdWrite;holdWrite=null;return promise.then(()=>result).then(resolve,reject); }
           if (hold && operation==='select') { const promise=hold;hold=null;return promise.then(()=>result).then(resolve,reject); }
           return Promise.resolve(result).then(resolve,reject);
         },
       }; return builder;
     },
   };
-  return { client, rows, calls, emit, hold: promise=>{hold=promise;}, fail: message=>{failure=message;} };
+  return { client, rows, calls, emit, hold: promise=>{hold=promise;}, holdWrite: promise=>{holdWrite=promise;}, fail: message=>{failure=message;} };
 }
 test('missing configuration disables account; frontend rejects privileged keys', () => {
   assert.equal(new SupabaseAccount(null, 'setup needed').getSnapshot().enabled, false);
@@ -100,6 +101,47 @@ test('late response from a previous account cannot display its picks after accou
     assert.deepEqual(account.getSnapshot().picks,[]);
   } finally {stop();}
 });
+test('save completion cannot report success for a different account or signed-out view', async () => {
+  for (const nextUser of ['bob', null]) {
+    const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
+    try {
+      await account.login('alice@example.com','valid');
+      let release;fake.holdWrite(new Promise(resolve=>{release=resolve;}));
+      const pending=account.save(pick);await tick();fake.emit(nextUser);await tick();release();
+      assert.equal(await pending,false);await tick();
+      assert.deepEqual(account.getSnapshot().picks,[]);
+      assert.equal(account.getSnapshot().busy,false);
+      assert.equal(account.getSnapshot().username,nextUser ? 'bob@example.com' : '');
+      assert.equal(fake.rows.get('alice').length,1);
+      assert.equal(fake.rows.get('bob'),undefined);
+    } finally {stop();}
+  }
+});
+
+test('account change during post-save reload does not report another users success', async () => {
+  const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
+  try {
+    await account.login('alice@example.com','valid');
+    let release;fake.hold(new Promise(resolve=>{release=resolve;}));
+    const pending=account.save(pick);await tick();fake.emit('bob');await tick();release();
+    assert.equal(await pending,false);await tick();
+    assert.equal(account.getSnapshot().username,'bob@example.com');
+    assert.deepEqual(account.getSnapshot().picks,[]);
+  } finally {stop();}
+});
+
+test('signing out and back into the same account invalidates an old save completion', async () => {
+  const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
+  try {
+    await account.login('alice@example.com','valid');
+    let release;fake.hold(new Promise(resolve=>{release=resolve;}));
+    const pending=account.save(pick);await tick();
+    fake.emit(null);fake.emit('alice');await tick();release();
+    assert.equal(await pending,false);
+    assert.equal(account.getSnapshot().username,'alice@example.com');
+  } finally {stop();}
+});
+
 test('unapproved member and database outages fail visibly without browser fallback', async () => {
   const fake=fakeClient(), account=new SupabaseAccount(fake.client);const stop=account.start();
   try {
@@ -114,6 +156,22 @@ test('reads every page instead of silently limiting a users saved picks', async 
   const fake=fakeClient();fake.rows.set('alice',Array.from({length:501},(_,i)=>({...pick,id:String(i)})));
   const account=new SupabaseAccount(fake.client);const stop=account.start();
   try {await account.login('alice@example.com','valid');assert.equal(account.getSnapshot().picks.length,501);} finally {stop();}
+});
+
+test('malformed saved rows fail visibly without rendering or deleting records', async () => {
+  for (const invalid of [null, { ...pick, player: {} }, { ...pick, projection: '13' },
+    { ...pick, odds: 0 }, { ...pick, demo: 'false' }, { ...pick, result: 'Verified win' }]) {
+    const fake=fakeClient();fake.rows.set('alice',[invalid]);
+    const account=new SupabaseAccount(fake.client);const stop=account.start();
+    try {
+      await account.login('alice@example.com','valid');
+      assert.match(account.getSnapshot().error,/unexpected format/);
+      assert.deepEqual(account.getSnapshot().picks,[]);
+      assert.equal(account.getSnapshot().busy,false);
+      assert.deepEqual(fake.rows.get('alice'),[invalid]);
+      assert.equal(fake.calls.some(call=>call.operation==='delete'),false);
+    } finally {stop();}
+  }
 });
 
 test('signup waits for email confirmation and never treats a pending user as signed in', async () => {

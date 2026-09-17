@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PredictResults } from "@/components/ui/PredictResults";
 import { Loader2 } from "lucide-react";
-import { ApiRequestError, fetchJson } from "@/lib/api";
+import { ApiRequestError, fetchJson, validatePredictResponse } from "@/lib/api";
 import { easternToday } from "@/lib/format";
 import type { PredictRequest, PredictResponse } from "@/types/api";
 import { readLookupDraft, writeLookupDraft } from "@/lib/lookup-draft";
@@ -99,7 +99,7 @@ export function PredictForm() {
         { timeoutMs: 110_000 },
       );
       if (activeRequest.current !== controller || controller.signal.aborted) return;
-      setResult(response);
+      setResult(validatePredictResponse(response));
     } catch (requestError: unknown) {
       if (requestError instanceof ApiRequestError && requestError.kind === "aborted") return;
       if (activeRequest.current !== controller || controller.signal.aborted) return;

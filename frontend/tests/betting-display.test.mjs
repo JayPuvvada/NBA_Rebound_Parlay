@@ -11,7 +11,7 @@ let PlayerDetailPanel;
 let PredictForm;
 let bettingView;
 before(async () => {
-  server = await createServer({ server: { middlewareMode: true, watch: null, ws: false }, appType: "custom" });
+  server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: "custom" });
   ({ BettingAnalysis } = await server.ssrLoadModule("/src/components/ui/BettingAnalysis.tsx"));
   ({ PredictResults } = await server.ssrLoadModule("/src/components/ui/PredictResults.tsx"));
   ({ PlayerDetailPanel } = await server.ssrLoadModule("/src/components/ui/PlayerDetailPanel.tsx"));

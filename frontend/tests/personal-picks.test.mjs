@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 let server, lib, PersonalContext, MyPicks, SavePickControl;
 before(async () => {
-  server = await createServer({ server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
+  server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
   lib = await server.ssrLoadModule('/src/lib/personal-picks.ts');
   ({ PersonalContext } = await server.ssrLoadModule('/src/lib/personal-context.ts'));
   ({ MyPicks } = await server.ssrLoadModule('/src/components/ui/MyPicks.tsx'));
@@ -62,6 +62,16 @@ test('corrupt or unavailable storage fails explicitly, not as an empty ledger', 
   for (const raw of ['not json', '{}', '[{"id":"bad"}]']) assert.throws(() => lib.readPicks({ getItem: () => raw }));
   assert.throws(() => lib.writePicks({ setItem() { throw Error('quota'); } }, [], true));
 });
+
+test('saved-pick validation accepts real snapshots but demo storage remains demo-only', () => {
+  const pick = lib.snapshotPick(data, metrics);
+  assert.equal(lib.isSavedPick({ ...pick, demo: false }), true);
+  assert.throws(() => lib.readPicks({ getItem: () => JSON.stringify([{ ...pick, demo: false }]) }));
+  for (const changes of [{ player: ' ' }, { projection: -1 }, { line: -1 },
+    { odds: 0 }, { result: 'Unknown' }, { demo: 'true' }]) {
+    assert.equal(lib.isSavedPick({ ...pick, ...changes }), false);
+  }
+});
 test('saving is absent without demo context and asks signed-out users to sign in', () => {
   assert.equal(renderToStaticMarkup(createElement(SavePickControl, { data, metrics })), '');
   assert.match(render(SavePickControl, { data, metrics }, { ...state, signedIn: false }), /Sign in to the test profile/);
@@ -99,4 +109,15 @@ test('signup entry point appears only when the account provider enables it', () 
   assert.match(render(MyPicks, {}, account), /New here\? Create an account/);
   assert.doesNotMatch(render(MyPicks, {}, { ...account, signup: undefined }), /New here/);
   assert.doesNotMatch(render(MyPicks, {}, { ...account, mode: 'demo' }), /New here/);
+});
+
+test('empty picks copy distinguishes loading and failure from an empty account', () => {
+  const account = { ...state, mode: 'account', enabled: true };
+  const loading = render(MyPicks, {}, { ...account, busy: true });
+  assert.match(loading, /Loading saved picks/);
+  assert.doesNotMatch(loading, /No saved picks yet/);
+  const failed = render(MyPicks, {}, { ...account, error: 'Database unavailable' });
+  assert.match(failed, /does not mean your account is empty/);
+  assert.doesNotMatch(failed, /No saved picks yet/);
+  assert.match(render(MyPicks, {}, account), /No saved picks yet/);
 });

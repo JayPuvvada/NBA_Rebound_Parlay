@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlayerDetailPanel } from "@/components/ui/PlayerDetailPanel";
 import { Loader2 } from "lucide-react";
-import { ApiRequestError, fetchJson, unwrapCheatSheet } from "@/lib/api";
+import { ApiRequestError, fetchJson, unwrapCheatSheet, validateGamesResponse } from "@/lib/api";
 import { easternToday, formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
 import { bettingView } from "@/lib/betting";
 import type { CheatRow, CheatSheetOddsStatus, CheatSheetResponse, Game, GamesResponse } from "@/types/api";
@@ -52,7 +52,7 @@ export function CheatSheet() {
         const query = new URLSearchParams({ date });
         const response = await fetchJson<GamesResponse>(`/games?${query.toString()}`, { signal: controller.signal }, { timeoutMs: 30_000 });
         if (controller.signal.aborted) return;
-        if (!Array.isArray(response.games)) throw new Error("The games response had an unexpected shape.");
+        validateGamesResponse(response);
         setGames(response.games);
         if (response.games.length === 0) setEmptySchedule(response.message || `No NBA games found for ${date}.`);
       } catch (error: unknown) {

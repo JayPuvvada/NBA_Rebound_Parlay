@@ -60,6 +60,10 @@ for unavailable samples. A valid empty history is distinct from a source outage
 or malformed inputs. Pooled error scores cover evaluated games only; even
 `all_players_evaluated` means each player contributed at least one game, not that
 every scheduled game or appearance was evaluated.
+Repeated names differing only in case, spacing, accents or periods are audited
+once to avoid duplicate weighting and redundant requests. Blank player names and
+invalid dates fail before source requests. Different aliases for the same player
+are not guaranteed to deduplicate; use full player names.
 
 All six source histories returned primary NBA data. No player failed retrieval.
 The first appearance for each player was skipped; 10 subsequent games were

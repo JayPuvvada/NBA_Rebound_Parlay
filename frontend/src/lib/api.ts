@@ -1,4 +1,4 @@
-import type { ApiErrorPayload, CheatRow, CheatSheetOddsStatus, CheatSheetResponse } from "@/types/api";
+import type { ApiErrorPayload, CheatRow, CheatSheetOddsStatus, CheatSheetResponse, GamesResponse, PredictResponse } from "@/types/api";
 
 export type RequestFailureKind = "http" | "network" | "timeout" | "aborted" | "invalid-response";
 
@@ -19,7 +19,29 @@ interface FetchJsonOptions {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function validateGamesResponse(value: unknown): GamesResponse {
+  const team = (candidate: unknown): candidate is string =>
+    typeof candidate === 'string' && /^[A-Z]{2,3}$/.test(candidate);
+  if (!isRecord(value) || !Array.isArray(value.games) || value.games.some(game =>
+    !isRecord(game) || !team(game.home) || !team(game.away) || game.home === game.away
+    || (game.is_preseason !== undefined && typeof game.is_preseason !== 'boolean')
+    || ['id', 'game_id'].some(key => game[key] !== undefined && typeof game[key] !== 'string')
+  ) || (value.message !== undefined && typeof value.message !== 'string')) {
+    throw new ApiRequestError('The schedule response contained invalid game data. Please retry.', 'invalid-response');
+  }
+  return value as unknown as GamesResponse;
+}
+
+export function validatePredictResponse(value: unknown): PredictResponse {
+  if (!isRecord(value) || typeof value.player !== 'string' || !value.player.trim()
+    || typeof value.projection !== 'number' || !Number.isFinite(value.projection)
+    || value.projection < 0 || typeof value.home_game !== 'boolean') {
+    throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
+  }
+  return value as unknown as PredictResponse;
 }
 
 function errorMessage(payload: unknown, fallback: string): string {
@@ -79,6 +101,10 @@ export async function fetchJson<T>(
         "http",
         response.status,
       );
+    }
+
+    if (!raw.trim()) {
+      throw new ApiRequestError('Server returned an empty JSON response.', 'invalid-response', response.status);
     }
 
     return payload as T;

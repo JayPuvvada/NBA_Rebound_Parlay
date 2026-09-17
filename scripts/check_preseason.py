@@ -10,7 +10,21 @@ from dotenv import load_dotenv
 
 from src.data_loader import NBADataLoader, _parse_iso_date
 from src.features import _clean_minutes
-from src.utils import current_season
+from src.utils import current_season, normalize_name
+
+
+def unique_players(players):
+    seen = set()
+    result = []
+    for player in players:
+        cleaned = ' '.join(player.split())
+        key = normalize_name(cleaned)
+        if not key:
+            raise ValueError('Player names must not be blank')
+        if key not in seen:
+            seen.add(key)
+            result.append(cleaned)
+    return result
 
 
 def summarize(frame):
@@ -99,8 +113,13 @@ def main():
     parser.add_argument('--date', required=True)
     parser.add_argument('--evaluate', action='store_true', help='Evaluate a diagnostic walk-forward baseline, not betting picks')
     args = parser.parse_args()
+    try:
+        date = _parse_iso_date(args.date).isoformat()
+        players = unique_players(args.player)
+    except ValueError as exc:
+        parser.error(str(exc))
     load_dotenv('.env')
-    reports = [audit_player(player, args.date, args.evaluate) for player in dict.fromkeys(args.player)]
+    reports = [audit_player(player, date, args.evaluate) for player in players]
     output = reports[0] if len(reports) == 1 else {'players': reports, 'aggregate': aggregate_reports(reports)}
     print(json.dumps(output, indent=2, allow_nan=False))
 

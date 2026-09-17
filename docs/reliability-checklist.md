@@ -69,7 +69,25 @@ this work authorizes or performs a Render/Vercel deployment.
 - Historical Player Lookup uses its as-of historical team before requesting
   current roster information, avoiding an unnecessary live dependency when
   historical team data exists. Current/future lookups retain the roster check.
-- Backend: 239 tests passing. Frontend: 41 tests passing; production build,
+- Daily Edge rejects malformed schedule rows and messages before rendering.
+  Player Lookup rejects invalid core projection fields, and empty successful
+  HTTP bodies produce recoverable API errors instead of null results.
+- Isolated frontend tests disable unused dependency discovery to avoid background
+  scan/shutdown errors; production dependency optimization is unchanged.
+- Saved-pick mutations no longer return success after an account transition,
+  including a sign-out/sign-in round trip during the post-write reload. Writes
+  remain pinned to the initiating user; completed writes are not rolled back.
+- My Picks distinguishes loading and failed retrieval from an empty account.
+- Saved-pick rows are validated before cloud results reach the UI, sharing
+  structural validation with offline demo storage. Invalid records cause a
+  visible retrieval error; they are not silently dropped, deleted or rewritten.
+- Matchup scouting skips the opponent profile request when no scouting inputs
+  can use its position. Numeric-string contest percentages no longer crash the
+  matchup narrative. Final composite safety refreshes preserve earlier
+  restrictions and warnings instead of upgrading base eligibility.
+- Preseason CLI deduplicates normalized names before retrieval and rejects blank
+  names/invalid dates before loading configuration or making requests.
+- Backend: 244 tests passing. Frontend: 51 tests passing; production build,
   TypeScript and lint passed, including explanatory copy and cancellation guards.
 
 ## Still pending
@@ -90,6 +108,28 @@ this work authorizes or performs a Render/Vercel deployment.
 - Deploy only after explicit approval and local verification.
 
 ## External limitations
+
+Local recheck on 2026-09-17: the read-only Jokic audit for 2025-10-18
+retrieved four preseason and 84 prior-season appearances from primary NBA
+sources, with three evaluated games and no excluded input rows. This confirms
+those historical endpoints worked for that request, not uninterrupted service
+or hosted connectivity. No odds API calls or saved-pick writes were involved.
+
+The same local session exercised `/predict` for Nikola Jokic versus LAL on
+2025-03-14. An explicit away venue was rejected with `venue_mismatch`; automatic
+venue selection returned HTTP 200 in 42.09 seconds, projection 13.47, and
+`prediction_eligible: false`. Common-player-info and league-dashboard failures
+caused ESPN/neutral-context fallbacks. Historical injury and completed-game
+limitations also remained visible. This verifies a degraded historical route,
+not fresh live recommendations or hosted readiness. Recording was disabled;
+no market line or odds were supplied.
+
+Follow-up historical lookup after the matchup-request optimization returned
+HTTP 200 in 18.71 seconds, projection 13.27, still analysis-only. It reported
+historical-injury/completed-game restrictions without the earlier source-failure
+warnings. Different upstream availability means these two runs are not a
+controlled speed benchmark, and their differing projections are not an accuracy
+comparison. The later conservative safety-merge change is covered by local tests.
 
 Current-day check on 2026-09-09: `/games` returned HTTP 200 with zero games
 after ESPN fallback (8.23s; NBA scoreboard timed out). Existing Odds API key

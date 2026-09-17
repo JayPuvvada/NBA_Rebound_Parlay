@@ -11,10 +11,15 @@ multi-leg probabilities, place bets, or connect to your sportsbook account.
 Its projections and recommendation tiers are heuristic model outputs, not
 guarantees of accuracy or profit.
 
-**Updated:** September 7, 2026. The interface now focuses on the betting decision,
-with a shared compact results panel. Model calculations and backend API contracts
-are unchanged by this display update. The September 5 change audit below remains
-anchored to `0f0b903`; newer display changes are listed separately.
+**Readiness update:** September 17, 2026. Local reliability improvements include
+bounded source requests, partial-result handling, price-freshness safeguards,
+and historical team lookup without unnecessary current-roster requests.
+These changes do not guarantee NBA connectivity or model accuracy. Recognized
+preseason games are analysis-only; the exploratory historical audit is not a
+validated preseason forecasting model. See [current reliability checks](docs/reliability-checklist.md)
+and [preseason readiness](docs/preseason-readiness.md) for verified work and gaps.
+The September 5 change audit below remains anchored to `0f0b903`, not a complete
+description of the current working tree or proof of hosted deployment.
 
 ## Contents
 

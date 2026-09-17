@@ -4,7 +4,7 @@ import { createServer } from 'vite';
 
 let server, readLookupDraft, writeLookupDraft;
 before(async () => {
-  server = await createServer({ server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
+  server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
   ({ readLookupDraft, writeLookupDraft } = await server.ssrLoadModule('/src/lib/lookup-draft.ts'));
 });
 after(async () => { delete globalThis.sessionStorage; await server?.close(); });

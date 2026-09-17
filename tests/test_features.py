@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -13,6 +13,53 @@ from src.features import (
     _parse_height_inches,
     _projection_safety_context,
 )
+
+
+class MatchupRequestTests(unittest.TestCase):
+    def test_final_safety_refresh_cannot_erase_base_restrictions(self):
+        for base_eligible in (False, None, True):
+            with self.subTest(base_eligible=base_eligible):
+                loader = Mock()
+                loader.get_team_id.return_value = 2
+                loader.get_likely_opponent_matchup.return_value = None
+                engineer = FeatureEngineer(loader)
+                engineer.get_player_stats = Mock(return_value={'position': 'C', 'team_id': 1})
+                engineer.get_team_injury_list = Mock(return_value=[])
+                engineer.compute_projection = Mock(return_value={
+                    'projection': 8,
+                    'metadata': {'prediction_eligible': base_eligible, 'limitations': ['base restriction']},
+                    'data_freshness': {'prediction_eligible': True, 'limitations': ['source warning']}})
+                safety = _projection_safety_context(loader, '2020-01-10')
+                safety.update(prediction_eligible=True, limitations=['new warning'])
+                with patch('src.features._projection_safety_context', return_value=safety):
+                    result = engineer.compute_composite_projection(1, 'LAL', as_of_date='2020-01-10')
+                for key in ('metadata', 'data_freshness'):
+                    self.assertEqual(result[key]['prediction_eligible'], base_eligible is True)
+                    self.assertEqual(result[key]['limitations'], ['source warning', 'base restriction', 'new warning'])
+
+    def test_profile_is_only_fetched_when_scouting_inputs_can_use_position(self):
+        for available, contest in ((False, None), (True, None), (True, '90'), (True, 'bad')):
+            with self.subTest(available=available, contest=contest):
+                loader = Mock()
+                loader.get_team_id.return_value = 2
+                loader.get_likely_opponent_matchup.return_value = {
+                    'player_id': 3, 'player_name': 'Opponent', 'injury_note': None}
+                loader.get_player_advanced_stats.return_value = (
+                    pd.DataFrame([{'REB_PCT': 0.90 if contest is not None else 0.16}]) if available else pd.DataFrame())
+                loader.get_player_hustle_stats.return_value = pd.DataFrame()
+                loader.get_player_rebounding_tracking_stats.return_value = (
+                    pd.DataFrame([{'REB_CONTEST_PCT': contest}]) if contest is not None else pd.DataFrame())
+                loader.get_common_player_info.return_value = pd.DataFrame([{'POSITION': 'Center'}])
+                engineer = FeatureEngineer(loader)
+                engineer.get_player_stats = Mock(return_value={'position': 'C', 'team_id': 1})
+                engineer.compute_projection = Mock(return_value={'projection': 8})
+                engineer.get_team_injury_list = Mock(return_value=[])
+                result = engineer.compute_composite_projection(1, 'LAL', as_of_date='2020-01-10')
+                if contest is None:
+                    self.assertEqual(result['modifiers']['matchup_player_adj'], 1.0)
+                elif contest == '90':
+                    self.assertIn('Elite', result['matchup_context'])
+                self.assertEqual(loader.get_common_player_info.call_count, int(available))
 
 
 class HeightParsingTest(unittest.TestCase):

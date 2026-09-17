@@ -44,15 +44,24 @@ export function snapshotPick(data: ProjectionBase, metrics: ProjectionMetrics, d
   };
 }
 
+export function isSavedPick(value: unknown): value is SavedPick {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const p = value as Record<string, unknown>;
+  return [p.id, p.player, p.opponent, p.date, p.bookmaker, p.savedAt]
+    .every(v => typeof v === 'string' && v.trim().length > 0)
+    && [p.projection, p.line, p.odds].every(v => typeof v === 'number' && Number.isFinite(v))
+    && (p.projection as number) >= 0 && (p.line as number) >= 0
+    && Math.abs(p.odds as number) >= 100
+    && (p.direction === 'OVER' || p.direction === 'UNDER')
+    && ['Pending', 'Win', 'Loss', 'Push'].includes(p.result as string)
+    && typeof p.demo === 'boolean';
+}
+
 export function readPicks(storage: Pick<Storage, "getItem">): SavedPick[] {
   const raw = storage.getItem(PICKS_KEY);
   if (raw === null) return [];
   const value: unknown = JSON.parse(raw);
-  if (!Array.isArray(value) || !value.every(p => p &&
-    [p.id, p.player, p.opponent, p.date, p.bookmaker, p.savedAt].every(v => typeof v === "string") &&
-    [p.projection, p.line, p.odds].every(v => typeof v === "number" && Number.isFinite(v)) &&
-    ["OVER", "UNDER"].includes(p.direction) &&
-    ["Pending", "Win", "Loss", "Push"].includes(p.result) && p.demo === true)) {
+  if (!Array.isArray(value) || !value.every(p => isSavedPick(p) && p.demo === true)) {
     throw new Error("Invalid saved-pick data");
   }
   return value;

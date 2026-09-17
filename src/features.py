@@ -1243,7 +1243,16 @@ class FeatureEngineer:
                 _with_as_of, self.loader.get_player_rebounding_tracking_stats, m_pid,
                 as_of_date=as_of_date,
             )
-            m_info = optional_frame(self.loader.get_common_player_info, m_pid)
+            # Position only calibrates the scouting factors below. If none of
+            # their inputs exist, another profile request cannot affect the
+            # neutral adjustment and can needlessly exhaust the request budget.
+            has_scout_inputs = (
+                (not m_adv.empty and 'REB_PCT' in m_adv.columns)
+                or (not m_hustle.empty and 'BOX_OUTS' in m_hustle.columns)
+                or (not m_pt.empty and bool({'REB_CHANCE_PCT_ADJ', 'REB_CONTEST_PCT'} & set(m_pt.columns)))
+            )
+            m_info = (optional_frame(self.loader.get_common_player_info, m_pid)
+                      if has_scout_inputs else pd.DataFrame())
             
             # Matchup Position
             m_pos = 'F'
@@ -1302,7 +1311,7 @@ class FeatureEngineer:
             if final_adjustment <= 0.975:
                 strength = "Elite"
                 if not m_pt.empty and 'REB_CONTEST_PCT' in m_pt.columns:
-                    c_pct = m_pt['REB_CONTEST_PCT'].iloc[0]
+                    c_pct = _finite_float(m_pt['REB_CONTEST_PCT'].iloc[0], c['contest_pct'], minimum=0)
                     if c_pct > 1.0: c_pct /= 100.0
                     if c_pct > c['contest_pct'] + 0.1: reasons.append("Tough Finisher")
             elif final_adjustment < 0.99:
@@ -1350,17 +1359,25 @@ class FeatureEngineer:
         safety = _projection_safety_context(self.loader, as_of_date)
         freshness = proj_result.setdefault('data_freshness', {})
         metadata = proj_result.setdefault('metadata', {})
+        eligible = (safety['prediction_eligible'] is True
+                    and freshness.get('prediction_eligible') is True
+                    and metadata.get('prediction_eligible') is True)
+        limitations = list(dict.fromkeys([
+            *(freshness.get('limitations') or []),
+            *(metadata.get('limitations') or []),
+            *safety['limitations'],
+        ]))
         freshness['injuries'] = safety['injury_freshness']
         freshness['projection_inputs'] = safety['data_sources']
         freshness['injury_status_acceptable'] = safety['injury_status_acceptable']
-        freshness['prediction_eligible'] = safety['prediction_eligible']
-        freshness['limitations'] = list(safety['limitations'])
+        freshness['prediction_eligible'] = eligible
+        freshness['limitations'] = list(limitations)
         metadata['historical_mode'] = safety['historical_mode']
         metadata['live_injuries_applied'] = safety['injury_status_acceptable']
         metadata['injury_status_acceptable'] = safety['injury_status_acceptable']
         metadata['projection_inputs'] = safety['data_sources']
-        metadata['prediction_eligible'] = safety['prediction_eligible']
-        metadata['limitations'] = list(safety['limitations'])
+        metadata['prediction_eligible'] = eligible
+        metadata['limitations'] = list(limitations)
         
         proj_result['mean_projection'] = proj_result['projection'] # Backwards compat
         

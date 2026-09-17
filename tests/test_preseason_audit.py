@@ -1,10 +1,38 @@
 import unittest
+import contextlib
+import io
 from unittest.mock import patch, MagicMock
 import pandas as pd
-from scripts.check_preseason import summarize, aggregate_reports, audit_player
+from scripts.check_preseason import summarize, aggregate_reports, audit_player, unique_players, main
 
 
 class PreseasonAuditTests(unittest.TestCase):
+    def test_player_names_are_deduplicated_before_source_requests(self):
+        self.assertEqual(unique_players([' Nikola   Jokic ', 'nikola jokic', 'Nikola Jokić', 'Stephen Curry']),
+                         ['Nikola Jokic', 'Stephen Curry'])
+        with self.assertRaisesRegex(ValueError, 'blank'):
+            unique_players(['   '])
+
+    def test_cli_invalid_inputs_fail_before_loading_configuration_or_sources(self):
+        for player, date in [('Example', '2025-02-30'), (' ', '2025-10-18')]:
+            with patch('sys.argv', ['check_preseason', '--player', player, '--date', date]), \
+                    patch('scripts.check_preseason.load_dotenv') as env, \
+                    patch('scripts.check_preseason.audit_player') as audit, \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 2)
+            env.assert_not_called()
+            audit.assert_not_called()
+
+    def test_cli_requests_only_unique_players(self):
+        with patch('sys.argv', ['check_preseason', '--player', ' Nikola Jokic ',
+                               '--player', 'nikola jokic', '--date', '2025-10-18']), \
+                patch('scripts.check_preseason.load_dotenv'), \
+                patch('scripts.check_preseason.audit_player', return_value={'player': 'Nikola Jokic'}) as audit, \
+                contextlib.redirect_stdout(io.StringIO()):
+            main()
+        audit.assert_called_once_with('Nikola Jokic', '2025-10-18', False)
+
     def test_aggregate_weights_games_not_players_and_reports_missing_samples(self):
         row = lambda error: {'error': error, 'naive_prior_projection': 8, 'actual': 5}
         reports = [{'player': 'A', 'evaluation': {'games': [row(1), row(1)]}},

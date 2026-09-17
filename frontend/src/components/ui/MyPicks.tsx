@@ -54,7 +54,9 @@ export function MyPicks() {
         <button type="button" disabled={personal.busy} onClick={personal.logout} className="rounded-lg border border-zinc-700 px-4 py-2 disabled:opacity-50">Sign out</button>
       </div>
       <p className="text-sm text-zinc-400">Saved snapshots do not update with live odds and are not independently verified. Results below are marked manually, not verified performance.{!demo && " Reopening or focusing the app refreshes picks from your account."}</p>
-      {personal.picks.length === 0 && <div className="rounded-xl border border-dashed border-zinc-700 p-8 text-center">
+      {personal.picks.length === 0 && personal.busy && <p role="status" className="text-zinc-400">Loading saved picks…</p>}
+      {personal.picks.length === 0 && !personal.busy && personal.error && <p className="text-zinc-400">Saved picks could not be loaded. Refresh picks to try again; this does not mean your account is empty.</p>}
+      {personal.picks.length === 0 && !personal.busy && !personal.error && <div className="rounded-xl border border-dashed border-zinc-700 p-8 text-center">
         <p className="mb-4 text-zinc-300">No saved picks yet. Open a qualifying recommendation and choose Save pick.</p>
         <a className={button} href="#edge">Browse Daily Edge</a>
       </div>}
