@@ -103,7 +103,7 @@ class DataLoaderTest(unittest.TestCase):
             ],
             'data': [
                 ['001', '2026-01-02', 1, '7:30 pm ET', 10, 20],
-                ['001', '2026-01-02', 1, 'duplicate', 10, 20],
+                ['001', '2026-01-02', 1, '7:30 pm ET', 10, 20],
             ],
         }
         loader._retry_api_call = Mock(return_value=board)
@@ -128,6 +128,57 @@ class DataLoaderTest(unittest.TestCase):
         loader._retry_api_call = Mock(return_value=board)
         with self.assertRaises(DataUnavailableError):
             loader.get_games_for_date('2026-01-03')
+
+    def test_invalid_scoreboard_rows_are_errors_not_cached_empty_days(self):
+        for row in ([None, 10, 20], ['', 10, 20], ['game', None, 20],
+                    ['game', True, 20], ['game', 10.5, 20], ['game', 10, 10],
+                    ['game', float('nan'), 20], ['game', 10**400, 20]):
+            with self.subTest(row=row):
+                loader = self.make_loader()
+                board = Mock()
+                payload = {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID'], 'data': [row]}
+                board.game_header.get_dict.return_value = payload
+                loader._retry_api_call = Mock(return_value=board)
+                with self.assertRaises(DataUnavailableError):
+                    loader.get_games_for_date('2026-01-02')
+                payload['data'] = [['game', 10, 20]]
+                self.assertEqual(len(loader.get_games_for_date('2026-01-02')), 1)
+                self.assertEqual(loader._retry_api_call.call_count, 2)
+
+    def test_scoreboard_rejects_ambiguous_headers_wrong_dates_and_conflicting_duplicates(self):
+        payloads = [
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'HOME_TEAM_ID'], 'data': []},
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'GAME_DATE_EST'],
+             'data': [['game', 10, 20, '2026-01-03']]},
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'GAME_DATE_EST'],
+             'data': [['game', 10, 20, 'not a date']]},
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID'],
+             'data': [['game', 10, 20], ['game', 20, 10]]},
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'GAME_STATUS_ID'],
+             'data': [['game', 10, 20, 1], ['game', 10, 20, 3]]},
+            {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'GAME_STATUS_TEXT'],
+             'data': [['game', 10, 20, '7:30 pm ET'], ['game', 10, 20, 'Postponed']]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                loader = self.make_loader()
+                board = Mock()
+                board.game_header.get_dict.return_value = payload
+                loader._retry_api_call = Mock(return_value=board)
+                with self.assertRaises(DataUnavailableError):
+                    loader.get_games_for_date('2026-01-02')
+
+    def test_scoreboard_accepts_empty_days_and_nba_midnight_dates(self):
+        loader = self.make_loader()
+        board = Mock()
+        payload = {'headers': ['GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 'GAME_DATE_EST'],
+                   'data': []}
+        board.game_header.get_dict.return_value = payload
+        loader._retry_api_call = Mock(return_value=board)
+        self.assertEqual(loader.get_games_for_date_fresh('2026-01-02'), [])
+        payload['data'] = [['0012600001', 10, 20, '2026-01-02T00:00:00']]
+        result = loader.get_games_for_date_fresh('2026-01-02')
+        self.assertTrue(result[0]['is_preseason'])
 
     def test_fresh_scoreboard_method_bypasses_cached_slate(self):
         loader = self.make_loader()

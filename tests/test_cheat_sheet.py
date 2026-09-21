@@ -175,6 +175,15 @@ class CheatSheetContractTest(unittest.TestCase):
         self.assertEqual(set(row["side_evaluations"]), {"over", "under"})
         self.assertEqual(row["prediction_interval_68"], [row["range"]["low"], row["range"]["high"]])
 
+    def test_side_evaluations_keep_the_exact_line_used_for_each_quote(self):
+        row = _run({'value player': {
+            'over': {'line': 6.5, 'odds': -110},
+            'under': {'line': 9.5, 'odds': -115}}})[0]
+        self.assertEqual(row['side_evaluations']['over']['line'], 6.5)
+        self.assertEqual(row['side_evaluations']['under']['line'], 9.5)
+        self.assertNotEqual(row['side_evaluations']['over']['confidence'],
+                            row['over_probability'] if row['line'] != 6.5 else row['under_probability'])
+
     def test_legacy_over_price_is_never_used_for_under(self):
         row = _run({"value player": {"line": 20.5, "odds": -110, "book": "Legacy"}})[0]
         self.assertIsNone(row["direction"])

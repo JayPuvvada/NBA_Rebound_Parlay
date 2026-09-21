@@ -6,19 +6,24 @@ import threading
 import time
 
 
+_instance_token_lock = threading.RLock()
+
+
 def _freeze(value):
     """Convert common containers to a stable, hashable cache-key value."""
     if isinstance(value, dict):
-        return tuple(sorted((key, _freeze(item)) for key, item in value.items()))
+        return type(value), frozenset((_freeze(key), _freeze(item)) for key, item in value.items())
     if isinstance(value, (list, tuple)):
-        return tuple(_freeze(item) for item in value)
-    if isinstance(value, set):
-        return tuple(sorted(_freeze(item) for item in value))
+        return type(value), tuple(_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return type(value), frozenset(_freeze(item) for item in value)
     try:
         hash(value)
-        return value
+        # bool/int and other equal-but-differently-typed inputs must still run
+        # their own validation instead of borrowing a successful cached result.
+        return type(value), value
     except TypeError:
-        return repr(value)
+        return type(value), repr(value)
 
 
 def _clone(value):
@@ -63,10 +68,13 @@ def ttl_cache(seconds: float, *, cache_empty: bool = False, ttl_for_value=None):
         def make_key(args, kwargs):
             if args and hasattr(args[0], "__dict__"):
                 instance = args[0]
-                token = getattr(instance, "_ttl_cache_token", None)
-                if token is None:
-                    token = object()
-                    setattr(instance, "_ttl_cache_token", token)
+                # All decorated methods share this token. Serialize its first
+                # creation across both requests and different cache wrappers.
+                with _instance_token_lock:
+                    token = getattr(instance, "_ttl_cache_token", None)
+                    if token is None:
+                        token = object()
+                        setattr(instance, "_ttl_cache_token", token)
                 namespace = (
                     instance.__class__.__module__,
                     instance.__class__.__qualname__,

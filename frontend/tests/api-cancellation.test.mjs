@@ -99,3 +99,54 @@ test('malformed slate rows produce recoverable API errors instead of render cras
   }
   assert.deepEqual(unwrapCheatSheet({ projections: [] }).rows, []);
 });
+
+test('both projection boundaries reject malformed risk context before rendering', () => {
+  const valid = { player: 'Example', projection: 7, home_game: false };
+  const invalidContext = [
+    { limitations: { warning: 'Unavailable' } },
+    { limitations: ['Unavailable', {}] },
+    { prediction_eligible: 'false', metadata: { prediction_eligible: true } },
+    { metadata: [] },
+    { metadata: { limitations: 'Unavailable' } },
+    { metadata: { prediction_eligible: 'false' } },
+    { metadata: { projection_inputs: { status: {}, limitations: [] } } },
+    { data_freshness: { prediction_eligible: 'false' } },
+    { data_freshness: { projection_inputs: { limitations: [{}] } } },
+    { data_freshness: { injuries: { status: 500 } } },
+    { data_freshness: { note: {} } },
+    { injuries: { matchup: 500 } },
+    { injuries: { team_list: 'Unavailable' } },
+    { injuries: { opp_list: [{}] } },
+  ];
+  for (const context of invalidContext) {
+    const payload = { ...valid, ...context };
+    for (const validate of [validatePredictResponse, row => unwrapCheatSheet([row]), row => unwrapCheatSheet({ projections: [row] })]) {
+      assert.throws(() => validate(payload), error => error.kind === 'invalid-response', JSON.stringify(context));
+    }
+  }
+});
+
+test('valid risk context and legacy freshness messages are preserved', () => {
+  const valid = { player: 'Example', projection: 7, home_game: false,
+    prediction_eligible: false, limitations: ['Analysis only'],
+    metadata: { prediction_eligible: false, projection_inputs: { status: 'degraded', limitations: ['Fallback data'] } },
+    data_freshness: { injuries: { status: 'unavailable', fetched_at: null, stale: null } },
+    injuries: { matchup: null, team: 'Unavailable', team_list: [], opp_list: ['Player: out'] },
+  };
+  assert.equal(validatePredictResponse(valid), valid);
+  assert.equal(unwrapCheatSheet([valid]).rows[0], valid);
+  assert.equal(validatePredictResponse({ ...valid, data_freshness: 'Historical data' }).data_freshness, 'Historical data');
+});
+
+test('slate envelope rejects unsafe sportsbook status and provenance fields', () => {
+  const valid = { projections: [{ player: 'Example', projection: 7 }] };
+  for (const metadata of [
+    { odds: [] }, { odds: { error: { message: 'Unavailable' } } },
+    { odds: { updated_at: {} } }, { odds: { available: 'false' } },
+    { generated_at: {} }, { bookmaker: {} }, { odds_source: {} },
+  ]) {
+    assert.throws(() => unwrapCheatSheet({ ...valid, ...metadata }), error => error.kind === 'invalid-response');
+  }
+  const odds = { available: false, error: 'Unavailable', updated_at: null };
+  assert.deepEqual(unwrapCheatSheet({ ...valid, odds }).odds, odds);
+});

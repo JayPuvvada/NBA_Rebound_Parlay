@@ -1604,7 +1604,9 @@ class NBADataLoader:
             raise DataUnavailableError("ScoreboardV2 returned an invalid schema") from exc
 
         required = {'GAME_ID', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID'}
-        if not isinstance(headers, list) or not required.issubset(headers) or not isinstance(rows, list):
+        if (not isinstance(headers, list) or not all(isinstance(name, str) for name in headers)
+                or len(set(headers)) != len(headers)
+                or not required.issubset(headers) or not isinstance(rows, list)):
             raise DataUnavailableError("ScoreboardV2 response is missing required columns")
 
         indexes = {name: headers.index(name) for name in headers}
@@ -1614,29 +1616,45 @@ class NBADataLoader:
             return row[index] if index is not None and index < len(row) else None
 
         games = []
-        seen_game_ids = set()
+        seen_games = {}
         for row in rows:
             if not isinstance(row, (list, tuple)):
                 raise DataUnavailableError("ScoreboardV2 contains a malformed game row")
             gid = get_col(row, 'GAME_ID')
             hid = get_col(row, 'HOME_TEAM_ID')
             vid = get_col(row, 'VISITOR_TEAM_ID')
-            if not gid or not hid or not vid:
-                log.warning("Skipping schedule row missing game/team identifiers")
-                continue
-            if gid in seen_game_ids:
-                continue
-            seen_game_ids.add(gid)
-            games.append({
+            if not isinstance(gid, str) or not gid.strip():
+                raise DataUnavailableError('ScoreboardV2 contains an invalid game ID')
+            if (any(isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not 0 < value <= 2**53 or int(value) != value
+                    for value in (hid, vid)) or hid == vid):
+                raise DataUnavailableError('ScoreboardV2 contains invalid team identifiers')
+            gid = gid.strip()
+            game_date = get_col(row, 'GAME_DATE_EST')
+            if game_date is not None:
+                try:
+                    schedule_day = datetime.fromisoformat(str(game_date)).date().isoformat()
+                except ValueError as exc:
+                    raise DataUnavailableError('ScoreboardV2 contains an invalid game date') from exc
+                if schedule_day != requested_date:
+                    raise DataUnavailableError('ScoreboardV2 returned a game for a different date')
+            game = {
                 'game_id': gid,
                 'is_preseason': str(gid).startswith('001'),
-                'home_id': hid,
-                'away_id': vid,
+                'home_id': int(hid),
+                'away_id': int(vid),
                 'status': get_col(row, 'GAME_STATUS_ID'),
                 'status_text': get_col(row, 'GAME_STATUS_TEXT'),
                 'game_time': get_col(row, 'GAME_STATUS_TEXT'),
-                'game_date_est': get_col(row, 'GAME_DATE_EST') or requested_date,
-            })
+                'game_date_est': game_date or requested_date,
+            }
+            previous = seen_games.get(gid)
+            if previous is not None:
+                if any(previous[key] != game[key] for key in ('home_id', 'away_id', 'status', 'status_text')):
+                    raise DataUnavailableError('ScoreboardV2 contains conflicting duplicate games')
+                continue
+            seen_games[gid] = game
+            games.append(game)
 
         log.debug(f"ScoreboardV2 found {len(games)} unique games for {requested_date}.")
         return games

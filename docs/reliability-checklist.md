@@ -87,8 +87,16 @@ this work authorizes or performs a Render/Vercel deployment.
   restrictions and warnings instead of upgrading base eligibility.
 - Preseason CLI deduplicates normalized names before retrieval and rejects blank
   names/invalid dates before loading configuration or making requests.
-- Backend: 244 tests passing. Frontend: 51 tests passing; production build,
-  TypeScript and lint passed, including explanatory copy and cancellation guards.
+- NBA schedules reject missing identifiers, invalid/wrong dates, duplicate
+  columns, and conflicting duplicate games instead of caching a corrupt slate
+  as an empty day. Valid empty days and identical duplicate rows still work.
+- Pregame verification rejects boolean/fractional/nonfinite status codes and
+  malformed status text; invalid status keeps lookup results analysis-only.
+- Cache keys preserve argument/container types, preventing a successful integer
+  lookup from bypassing validation for a boolean input. First-use instance tokens
+  are initialized under a shared lock to prevent duplicate concurrent cold loads.
+- Frontend response guards validate nested safety flags, warnings, source/injury
+  context and odds provenance, preventing malformed context from reaching the UI.
 
 ## Still pending
 
@@ -108,6 +116,12 @@ this work authorizes or performs a Render/Vercel deployment.
 - Deploy only after explicit approval and local verification.
 
 ## External limitations
+
+Local schedule recheck on 2026-09-21: the stricter parser accepted 10 games
+for 2025-03-14 directly from NBA Stats in 0.37 seconds, including the provider's
+midnight `GAME_DATE_EST` format. This verifies one historical schedule request,
+not a live projection slate or Render/Vercel connectivity. No odds requests or
+account writes were made.
 
 Local recheck on 2026-09-17: the read-only Jokic audit for 2025-10-18
 retrieved four preseason and 84 prior-season appearances from primary NBA

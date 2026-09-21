@@ -10,13 +10,14 @@ let PredictResults;
 let PlayerDetailPanel;
 let PredictForm;
 let bettingView;
+let sideExpectedReturn;
 before(async () => {
   server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: "custom" });
   ({ BettingAnalysis } = await server.ssrLoadModule("/src/components/ui/BettingAnalysis.tsx"));
   ({ PredictResults } = await server.ssrLoadModule("/src/components/ui/PredictResults.tsx"));
   ({ PlayerDetailPanel } = await server.ssrLoadModule("/src/components/ui/PlayerDetailPanel.tsx"));
   ({ PredictForm } = await server.ssrLoadModule("/src/components/ui/PredictForm.tsx"));
-  ({ bettingView } = await server.ssrLoadModule("/src/lib/betting.ts"));
+  ({ bettingView, sideExpectedReturn } = await server.ssrLoadModule("/src/lib/betting.ts"));
 });
 after(async () => { await server?.close(); });
 
@@ -118,6 +119,63 @@ test("different line without matching evaluation does not borrow another line's 
   const html = render({ marketOdds: { under: { line: 12.5, odds: -115 } }, metrics: { ...metrics, side_evaluations: undefined } });
   assert.ok(html.includes("UNDER 12.5"));
   assert.ok(!html.includes("40.0%"));
+});
+
+test("different selected-side line does not borrow the original line's expected return", () => {
+  const html = render({
+    marketOdds: { over: { line: 12.5, odds: -110 } },
+    metrics: { ...metrics, side_evaluations: undefined },
+  });
+  assert.ok(html.includes("OVER 12.5"));
+  assert.ok(!html.includes("60.0%"));
+  assert.ok(!html.includes("+14.5%"));
+});
+
+test("a changed quote price cannot reuse the selected price's expected return", () => {
+  const html = render({
+    marketOdds: { over: { line: 10.5, odds: -120 } },
+    metrics: { ...metrics, side_evaluations: undefined },
+  });
+  assert.ok(html.includes("-120"));
+  assert.ok(html.includes("60.0%"));
+  assert.ok(!html.includes("+14.5%"));
+});
+
+test("side evaluation return is hidden if its price does not match the displayed quote", () => {
+  const html = render({ marketOdds: { under: { line: 10.5, odds: -120 } } });
+  assert.ok(html.includes("-120"));
+  assert.ok(html.includes("40.0%"));
+  assert.ok(!html.includes("−25.0%"));
+  assert.ok(html.includes("+14.5%"));
+});
+
+test("matching quotes retain selected-price and distinct-line evaluated returns", () => {
+  const selected = render({
+    marketOdds: { over: { line: 10.5, odds: -110 } },
+    metrics: { ...metrics, side_evaluations: undefined },
+  });
+  assert.ok(selected.includes("+14.5%"));
+  const evaluated = render({
+    marketOdds: { under: { line: 12.5, odds: -115 } },
+    metrics: { ...metrics, side_evaluations: { under: { direction: "UNDER", confidence: 0.7, american_odds: -115, ev_roi: 0.1 } } },
+  });
+  assert.ok(evaluated.includes("UNDER 12.5"));
+  assert.ok(evaluated.includes("70.0%"));
+  assert.ok(evaluated.includes("+10.0%"));
+});
+
+test("return fallbacks reject contradictory sides and invalid prices", () => {
+  const selected = { ...metrics, side_evaluations: undefined };
+  assert.equal(sideExpectedReturn({ ...selected, evaluated_side: 'UNDER' }, 'UNDER', 10.5, -110), null);
+  assert.equal(sideExpectedReturn({ ...selected, odds_side: 'UNDER' }, 'OVER', 10.5, -110), null);
+  assert.equal(sideExpectedReturn({ ...selected, direction: null }, 'OVER', 10.5, -110), 0.145);
+  assert.equal(sideExpectedReturn({ ...selected, ev_roi: Infinity }, 'OVER', 10.5, -110), null);
+  for (const price of [null, undefined, 0, 99, -99, Infinity]) {
+    assert.equal(sideExpectedReturn({ ...selected, american_odds: price }, 'OVER', 10.5, price), null);
+  }
+  assert.equal(sideExpectedReturn({
+    ...metrics, side_evaluations: { under: { direction: 'OVER', american_odds: -115, ev_roi: 0.8 } },
+  }, 'UNDER', 10.5, -115), null);
 });
 
 test("injury staleness, missing lists and high variance stay visible without Fano math", () => {

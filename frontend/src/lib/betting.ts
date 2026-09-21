@@ -1,4 +1,24 @@
-import type { ProjectionBase, ProjectionMetrics } from "@/types/api";
+import type { Direction, ProjectionBase, ProjectionMetrics } from "@/types/api";
+
+/** Return estimates are valid only for the side, line and price evaluated. */
+export function sideExpectedReturn(metrics: ProjectionMetrics, side: Direction, line: number, price: number | null | undefined): number | null {
+  if (!Number.isFinite(line) || line < 0 || typeof price !== 'number'
+    || !Number.isInteger(price) || Math.abs(price) < 100) return null;
+  const evaluation = metrics.side_evaluations?.[side === 'OVER' ? 'over' : 'under'];
+  // Side evaluations are paired with their corresponding market quote by the
+  // API, including when the Over and Under have different lines.
+  if (evaluation?.direction === side && evaluation.american_odds === price
+    && typeof evaluation.ev_roi === 'number' && Number.isFinite(evaluation.ev_roi)) {
+    return evaluation.ev_roi;
+  }
+  const selectedSides = [metrics.evaluated_side, metrics.odds_side, metrics.direction].filter(value => value != null);
+  if (selectedSides.length > 0 && selectedSides.every(value => value === side)
+    && metrics.line === line && metrics.american_odds === price
+    && typeof metrics.ev_roi === 'number' && Number.isFinite(metrics.ev_roi)) {
+    return metrics.ev_roi;
+  }
+  return null;
+}
 
 /** Presentation guards only: never create a pick that the backend did not issue. */
 export function bettingView(data: ProjectionBase, metrics: ProjectionMetrics = {}) {

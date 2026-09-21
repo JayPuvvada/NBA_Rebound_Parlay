@@ -5,6 +5,67 @@ from src.cache import ttl_cache
 
 
 class TTLCacheTest(unittest.TestCase):
+    def test_warm_cache_does_not_bypass_argument_type_validation(self):
+        @ttl_cache(60)
+        def load(player_id):
+            if isinstance(player_id, bool):
+                raise ValueError('boolean player ID is invalid')
+            return {'player_id': player_id}
+
+        self.assertEqual(load(1), {'player_id': 1})
+        with self.assertRaisesRegex(ValueError, 'boolean player ID'):
+            load(True)
+
+    def test_container_types_remain_distinct_in_cache_keys(self):
+        @ttl_cache(60)
+        def load(options):
+            return type(options).__name__
+
+        self.assertEqual(load([1]), 'list')
+        self.assertEqual(load((1,)), 'tuple')
+        self.assertEqual(load({1}), 'set')
+
+    def test_concurrent_first_calls_share_one_instance_token(self):
+        # Synchronize missing-token reads to reproduce the race deterministically.
+        # With serialized initialization, the first read times out harmlessly;
+        # the second read sees the token that was already installed.
+        token_reads = threading.Barrier(2)
+        start = threading.Barrier(3)
+        results = []
+
+        class Source:
+            def __init__(self):
+                self.calls = 0
+
+            def __getattr__(self, name):
+                if name == '_ttl_cache_token':
+                    try:
+                        token_reads.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                raise AttributeError(name)
+
+            @ttl_cache(60)
+            def load(self):
+                self.calls += 1
+                return [7]
+
+        source = Source()
+
+        def call():
+            start.wait(timeout=2)
+            results.append(source.load())
+
+        workers = [threading.Thread(target=call) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        start.wait(timeout=2)
+        for worker in workers:
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(results, [[7], [7]])
+        self.assertEqual(source.calls, 1)
+
     def test_instances_and_seasons_do_not_share_entries(self):
         class Source:
             def __init__(self, season, marker):

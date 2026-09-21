@@ -11,7 +11,7 @@ multi-leg probabilities, place bets, or connect to your sportsbook account.
 Its projections and recommendation tiers are heuristic model outputs, not
 guarantees of accuracy or profit.
 
-**Readiness update:** September 17, 2026. Local reliability improvements include
+**Readiness update:** September 21, 2026. Local reliability improvements include
 bounded source requests, partial-result handling, price-freshness safeguards,
 and historical team lookup without unnecessary current-roster requests.
 These changes do not guarantee NBA connectivity or model accuracy. Recognized

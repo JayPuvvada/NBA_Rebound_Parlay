@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { DataFreshness } from "./DataFreshness";
 import { SavePickControl } from "./SavePickControl";
 import { formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
-import { bettingView, noBetReason } from "@/lib/betting";
+import { bettingView, noBetReason, sideExpectedReturn } from "@/lib/betting";
 import type { CheatRange, MarketOdds, ProjectionBase, ProjectionMetrics, SimulationRange } from "@/types/api";
 
 const TrendChart = lazy(() => import("./TrendChart").then(module => ({ default: module.TrendChart })));
@@ -82,7 +82,7 @@ export function BettingAnalysis({ data, metrics: rawMetrics, range, marketOdds, 
               const price = quote?.odds ?? evaluation?.american_odds ?? (isEvaluated ? metrics.american_odds : null);
               // Different lines must keep their own probability, never reuse the selected line's value.
               const probability = evaluation?.confidence ?? (sideLine === line ? (side === "over" ? metrics.over_probability : metrics.under_probability) : null);
-              const ev = evaluation?.ev_roi ?? (isEvaluated ? metrics.ev_roi : null);
+              const ev = sideExpectedReturn(metrics, sideName, sideLine, price);
               const showReturn = eligible && metrics.tier !== "STALE_ODDS" && price != null && ev != null;
               return (
                 <div key={side} className={"rounded-lg border p-4 " + (direction === sideName ? "border-emerald-600 bg-emerald-950/10" : "border-zinc-800 bg-zinc-900/30")}>

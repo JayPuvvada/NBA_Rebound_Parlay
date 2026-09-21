@@ -277,12 +277,18 @@ def _detect_home_game(date_loader, team_id, opponent_id, date_str):
 def _is_pregame(game):
     if not isinstance(game, dict):
         return False
-    try:
-        if int(game.get('status')) != 1:
-            return False
-    except (TypeError, ValueError):
+    status = game.get('status')
+    # int(True) and int(1.5) both equal 1; neither is a verified pregame code.
+    if isinstance(status, str):
+        valid_status = status.strip() == '1'
+    else:
+        valid_status = isinstance(status, (int, float)) and not isinstance(status, bool) and status == 1
+    if not valid_status:
         return False
-    status_text = str(game.get('status_text') or '').strip().lower()
+    status_text = game.get('status_text')
+    if status_text is not None and not isinstance(status_text, str):
+        return False
+    status_text = (status_text or '').strip().lower()
     return not any(
         marker in status_text
         for marker in (
@@ -723,6 +729,7 @@ def predict():
                 )
                 evaluations.append({
                     'direction': direction,
+                    'line': line,
                     'confidence': confidence,
                     'hit_rate': hit_rate,
                     'hit_rate_games': n_games,

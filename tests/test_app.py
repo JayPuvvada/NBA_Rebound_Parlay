@@ -287,6 +287,24 @@ class PredictContractTests(AppTestCase):
         self.assertEqual(response.get_json()['code'], 'player_info_unavailable')
         info.assert_called_once()
 
+    def test_pregame_gate_rejects_coerced_or_malformed_status_values(self):
+        for status in (True, False, 1.1, 1.9, float('inf'), float('nan'), {}, [], None, '1.5'):
+            with self.subTest(status=status):
+                self.assertFalse(app_module._is_pregame({'status': status}))
+        for status in (1, 1.0, '1', ' 1 '):
+            self.assertTrue(app_module._is_pregame({'status': status, 'status_text': '7:30 pm ET'}))
+        self.assertFalse(app_module._is_pregame({'status': 1, 'status_text': {'state': 'final'}}))
+
+    def test_invalid_pregame_status_keeps_lookup_analysis_only(self):
+        game = dict(self.loader.get_games_for_date(None)[0], status=True)
+        with patch.object(self.loader, 'get_games_for_date', return_value=[game]):
+            response = self.client.post('/predict', json={
+                'player': 'Test Player', 'opponent': 'BOS', 'date': '2026-01-15',
+                'home_game': False, 'line': 8.5, 'over_odds': -110})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()['prediction_eligible'])
+        self.assertFalse(response.get_json()['analysis']['actionable'])
+
     def test_postponed_abbreviation_is_not_pregame(self):
         postponed = dict(
             self.loader.get_games_for_date(None)[0], status=1, status_text="PPD"
@@ -370,6 +388,8 @@ class PredictContractTests(AppTestCase):
         self.assertGreaterEqual(analysis["over_probability"], 0.0)
         self.assertLessEqual(analysis["over_probability"], 1.0)
         self.assertIn("side_evaluations", analysis)
+        self.assertEqual(analysis["side_evaluations"]["over"]["line"], 6.5)
+        self.assertEqual(analysis["side_evaluations"]["under"]["line"], 6.5)
         self.assertIn("variance", analysis)
         self.assertIn("actionable", analysis)
         self.assertEqual(analysis["probability_unit"], "fraction")

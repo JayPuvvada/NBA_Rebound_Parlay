@@ -324,6 +324,7 @@ def project_team(
             side_evaluations = {
                 candidate["side"].lower(): {
                     "direction": candidate["side"],
+                    "line": candidate["line"],
                     "confidence": candidate["confidence"],
                     "hit_rate": candidate["hit_rate"],
                     "hit_rate_games": candidate["hit_rate_games"],

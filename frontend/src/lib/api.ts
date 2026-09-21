@@ -22,6 +22,63 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function optionalText(value: unknown): boolean {
+  return value == null || typeof value === 'string';
+}
+
+function optionalBoolean(value: unknown): boolean {
+  return value == null || typeof value === 'boolean';
+}
+
+function optionalTextList(value: unknown): boolean {
+  return value == null || (Array.isArray(value) && value.every(item => typeof item === 'string'));
+}
+
+function validRiskFields(value: Record<string, unknown>): boolean {
+  return optionalBoolean(value.prediction_eligible) && optionalTextList(value.limitations);
+}
+
+function validProjectionSource(value: unknown): boolean {
+  return value == null || (isRecord(value)
+    && optionalText(value.status) && optionalText(value.source) && optionalTextList(value.limitations));
+}
+
+function validRiskContext(value: unknown): boolean {
+  return value == null || (isRecord(value) && validRiskFields(value)
+    && validProjectionSource(value.projection_inputs));
+}
+
+// TypeScript types do not validate JSON. Reject malformed risk fields rather
+// than dropping warnings or allowing a malformed false flag to look eligible.
+function validProjectionContext(value: Record<string, unknown>): boolean {
+  if (!validRiskFields(value) || !validRiskContext(value.metadata)) return false;
+  const freshness = value.data_freshness;
+  if (freshness != null && typeof freshness !== 'string') {
+    if (!isRecord(freshness) || !validRiskContext(freshness)
+      || !optionalText(freshness.note) || !optionalText(freshness.injuries_updated_at)
+      || !optionalBoolean(freshness.stale)) return false;
+    const injuries = freshness.injuries;
+    if (injuries != null && (!isRecord(injuries)
+      || !optionalText(injuries.status) || !optionalText(injuries.fetched_at)
+      || !optionalBoolean(injuries.stale))) return false;
+  }
+  const injuries = value.injuries;
+  return injuries == null || (isRecord(injuries)
+    && optionalText(injuries.matchup) && optionalText(injuries.team)
+    && optionalTextList(injuries.team_list) && optionalTextList(injuries.opp_list));
+}
+
+function validProvenance(value: unknown): boolean {
+  return isRecord(value)
+    && ['bookmaker', 'odds_source', 'odds_updated_at', 'generated_at'].every(key => optionalText(value[key]));
+}
+
+function validOddsStatus(value: unknown): boolean {
+  return value == null || (isRecord(value)
+    && ['error', 'source', 'updated_at', 'fetched_at'].every(key => optionalText(value[key]))
+    && optionalBoolean(value.available) && optionalBoolean(value.fresh));
+}
+
 export function validateGamesResponse(value: unknown): GamesResponse {
   const team = (candidate: unknown): candidate is string =>
     typeof candidate === 'string' && /^[A-Z]{2,3}$/.test(candidate);
@@ -38,7 +95,8 @@ export function validateGamesResponse(value: unknown): GamesResponse {
 export function validatePredictResponse(value: unknown): PredictResponse {
   if (!isRecord(value) || typeof value.player !== 'string' || !value.player.trim()
     || typeof value.projection !== 'number' || !Number.isFinite(value.projection)
-    || value.projection < 0 || typeof value.home_game !== 'boolean') {
+    || value.projection < 0 || typeof value.home_game !== 'boolean'
+    || !validProjectionContext(value) || !validProvenance(value)) {
     throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
   }
   return value as unknown as PredictResponse;
@@ -135,6 +193,7 @@ export function unwrapCheatSheet(response: CheatSheetResponse): {
   if (!Array.isArray(rows) || rows.some(row =>
     !isRecord(row) || typeof row.player !== 'string' || !row.player.trim()
     || typeof row.projection !== 'number' || !Number.isFinite(row.projection) || row.projection < 0
+    || !validProjectionContext(row) || !validProvenance(row)
   )) {
     throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
   }
@@ -147,7 +206,8 @@ export function unwrapCheatSheet(response: CheatSheetResponse): {
     };
   }
 
-  if (!Array.isArray(response.projections)) {
+  if (!Array.isArray(response.projections) || !validProvenance(response)
+    || !validOddsStatus(response.odds)) {
     throw new ApiRequestError("The projection response had an unexpected shape.", "invalid-response");
   }
 
