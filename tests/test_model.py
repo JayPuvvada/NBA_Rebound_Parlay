@@ -122,6 +122,41 @@ class VarianceModelTest(unittest.TestCase):
         )
         self.assertEqual(result["params"]["fano_source"], "heuristic")
 
+    def test_invalid_explicit_sample_count_does_not_use_empirical_variance(self):
+        data = {"projection": 10.0, "trend_data": [8.0] * 20}
+        baseline = self.sim.simulate(data)["params"]
+        for key in ("sample_size", "games_played", "n_games"):
+            for count in (-1, 3.5, True, np.bool_(True), "bad", float("nan"), float("inf"), 10 ** 400):
+                with self.subTest(key=key, count=count):
+                    params = self.sim.simulate(
+                        data,
+                        player_variance={"reb_variance": 45.0, "reb_mean": 10.0, key: count},
+                    )["params"]
+                    self.assertEqual(params["empirical_weight"], 0.0)
+                    self.assertEqual(params["fano"], baseline["fano"])
+                    self.assertEqual(params["fano_source"], "heuristic_invalid_sample")
+                    self.assertFalse(params["high_variance_flag"])
+
+    def test_missing_sample_count_retains_existing_fallbacks(self):
+        variance = {"reb_variance": 45.0, "reb_mean": 10.0}
+        unknown = self.sim.simulate({"projection": 10.0}, player_variance=variance)["params"]
+        from_trend = self.sim.simulate(
+            {"projection": 10.0, "trend_data": [8.0] * 20}, player_variance=variance,
+        )["params"]
+        self.assertEqual(unknown["empirical_weight"], 0.35)
+        self.assertEqual(from_trend["empirical_games"], 20)
+        self.assertAlmostEqual(from_trend["empirical_weight"], 20 / 35, places=6)
+
+    def test_integral_numeric_sample_counts_remain_supported(self):
+        for count in (20, 20.0, "20", np.int64(20)):
+            with self.subTest(count=count):
+                params = self.sim.simulate(
+                    {"projection": 10.0},
+                    player_variance={"reb_variance": 45.0, "reb_mean": 10.0, "sample_size": count},
+                )["params"]
+                self.assertEqual(params["empirical_games"], 20)
+                self.assertEqual(params["fano_source"], "empirical")
+
 
 class ExactProbabilityTest(unittest.TestCase):
     def setUp(self):

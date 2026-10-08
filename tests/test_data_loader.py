@@ -5,7 +5,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
-from requests.exceptions import ReadTimeout
+from requests.exceptions import HTTPError, ReadTimeout
 
 import pandas as pd
 
@@ -418,6 +418,51 @@ class DataLoaderTest(unittest.TestCase):
             clock.return_value = 1031
             self.assertEqual(loader._retry_api_call(endpoint), 'healthy')
 
+    def test_nba_blocking_http_errors_stop_retries_and_start_endpoint_cooldown(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                loader = self.make_loader()
+                failure = HTTPError(response=Mock(status_code=status))
+                endpoint = Mock(side_effect=failure)
+                with (
+                    patch('src.data_loader.time.monotonic', return_value=1000) as clock,
+                    patch('src.data_loader.time.sleep') as sleep,
+                ):
+                    with self.assertRaises(HTTPError):
+                        loader._retry_api_call(endpoint, max_retries=3)
+                    self.assertEqual(endpoint.call_count, 1)
+                    sleep.assert_not_called()
+                    clock.return_value = 1010
+                    with self.assertRaises(DataUnavailableError):
+                        loader._retry_api_call(endpoint)
+                    self.assertEqual(endpoint.call_count, 1)
+
+    def test_retry_budget_exhaustion_preserves_connection_failure_cooldown(self):
+        from src.data_loader import RequestBudgetExceeded
+        loader = self.make_loader()
+        endpoint = Mock(side_effect=ReadTimeout('offline'))
+        with (
+            patch('src.data_loader.time.monotonic', return_value=1000) as clock,
+            patch('src.data_loader.time.sleep') as sleep,
+        ):
+            loader.set_request_budget(0.2)
+            with self.assertRaises(RequestBudgetExceeded):
+                loader._retry_api_call(endpoint, max_retries=3)
+            loader.set_request_budget(None)
+            clock.return_value = 1010
+            with self.assertRaises(DataUnavailableError):
+                loader._retry_api_call(endpoint)
+            self.assertEqual(endpoint.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_successful_transient_retry_clears_endpoint_cooldown(self):
+        loader = self.make_loader()
+        endpoint = Mock(side_effect=[ReadTimeout('offline'), 'healthy', 'still healthy'])
+        with patch('src.data_loader.time.monotonic', return_value=1000), patch('src.data_loader.time.sleep'):
+            self.assertEqual(loader._retry_api_call(endpoint, max_retries=2), 'healthy')
+            self.assertNotIn(endpoint, loader._nba_endpoint_unavailable_until)
+            self.assertEqual(loader._retry_api_call(endpoint), 'still healthy')
+
     def test_transport_failure_does_not_block_a_different_endpoint(self):
         loader = self.make_loader()
         with self.assertRaises(ReadTimeout):
@@ -431,6 +476,122 @@ class DataLoaderTest(unittest.TestCase):
         loader._retry_api_call = Mock(return_value=FakeEndpointResponse(pd.DataFrame([{'PLAYER_ID': 1, 'PLAYER': 'Test'}])))
         loader.get_team_roster(10)
         self.assertEqual(loader._retry_api_call.call_args.kwargs['timeout'], 30)
+
+    @staticmethod
+    def analysis_roster_payload(athletes=None):
+        return {
+            'team': {'abbreviation': 'GS'},
+            'season': {'year': 2027},
+            'athletes': athletes if athletes is not None else [
+                {'id': '3975', 'fullName': 'Stephen Curry'},
+            ],
+        }
+
+    def test_analysis_roster_prefers_bounded_nba_primary(self):
+        loader = self.make_loader(season='2026-27')
+        loader._retry_api_call = Mock(return_value=FakeEndpointResponse(pd.DataFrame([
+            {'PLAYER_ID': 201939, 'PLAYER': 'Stephen Curry'},
+        ])))
+        loader._retry_http_get = Mock()
+        result = loader.get_analysis_roster(1610612744)
+        self.assertEqual(result['source'], 'stats.nba.com')
+        self.assertEqual(result['players'], [{'player_id': 201939, 'name': 'Stephen Curry'}])
+        self.assertEqual(result['unmatched_count'], 0)
+        self.assertEqual(loader._retry_api_call.call_args.kwargs['timeout'], 8)
+        loader._retry_http_get.assert_not_called()
+
+    def test_analysis_roster_fallback_maps_only_unique_exact_names_and_replays_source(self):
+        loader = self.make_loader(season='2026-27')
+        loader.get_team_roster = Mock(side_effect=ReadTimeout('offline'))
+        athletes = [
+            {'id': 'espn-not-nba', 'fullName': 'Stephén  Curry'},
+            {'id': 'another-provider-id', 'fullName': 'New Rookie'},
+            {'id': 'ambiguous', 'fullName': 'Same Name'},
+            {'id': 'partial', 'fullName': 'Curry'},
+            {'id': 'bad', 'fullName': None},
+        ]
+        loader._retry_http_get = Mock(return_value=FakeHTTPResponse(self.analysis_roster_payload(athletes)))
+        with (
+            patch('src.data_loader.current_season', return_value='2026-27'),
+            patch('nba_api.stats.static.players.get_players', return_value=[
+                {'id': 201939, 'full_name': 'Stephen Curry'},
+                {'id': 1, 'full_name': 'Same Name'},
+                {'id': 2, 'full_name': 'Same Name'},
+            ]),
+        ):
+            result = loader.get_analysis_roster(1610612744)
+            self.assertEqual(result['source'], 'espn')
+            self.assertEqual(result['unmatched_count'], 4)
+            self.assertEqual(result['players'], [{'player_id': 201939, 'name': 'Stephén  Curry'}])
+            self.assertIn('4 roster entries', result['limitations'][1])
+            result['players'].clear()
+            loader.reset_data_source_metadata()
+            cached = loader.get_analysis_roster(1610612744)
+            self.assertEqual(len(cached['players']), 1)
+            self.assertEqual(loader.get_data_source_metadata()['status'], 'degraded')
+            self.assertEqual(loader.get_data_source_metadata()['limitations'], cached['limitations'])
+        loader._retry_http_get.assert_called_once()
+        self.assertEqual(loader._retry_http_get.call_args.kwargs['timeout'], 6)
+        self.assertEqual(loader._retry_http_get.call_args.kwargs['max_retries'], 1)
+
+    def test_analysis_roster_never_substitutes_current_team_for_historical_season(self):
+        loader = self.make_loader(season='2025-26')
+        loader.get_team_roster = Mock(side_effect=ReadTimeout('offline'))
+        loader._retry_http_get = Mock()
+        with patch('src.data_loader.current_season', return_value='2026-27'):
+            with self.assertRaisesRegex(DataUnavailableError, 'Historical NBA roster unavailable'):
+                loader.get_analysis_roster(1610612744)
+        loader._retry_http_get.assert_not_called()
+
+    def test_analysis_roster_rejects_wrong_team_season_and_unmatched_data(self):
+        wrong_team = self.analysis_roster_payload()
+        wrong_team['team']['abbreviation'] = 'LAC'
+        wrong_season = self.analysis_roster_payload()
+        wrong_season['season']['year'] = 2026
+        missing_season = self.analysis_roster_payload()
+        missing_season.pop('season')
+        for payload in (wrong_team, wrong_season, missing_season,
+                        self.analysis_roster_payload([]),
+                        self.analysis_roster_payload([{'fullName': 'No Matching NBA Player'}])):
+            with self.subTest(payload=payload):
+                loader = self.make_loader(season='2026-27')
+                loader.get_team_roster = Mock(side_effect=ReadTimeout('offline'))
+                loader._retry_http_get = Mock(return_value=FakeHTTPResponse(payload))
+                with patch('src.data_loader.current_season', return_value='2026-27'):
+                    with self.assertRaises(DataUnavailableError):
+                        loader.get_analysis_roster(1610612744)
+
+    def test_analysis_roster_empty_or_corrupt_primary_can_fallback(self):
+        frames = [
+            pd.DataFrame(), pd.DataFrame([{'PLAYER_ID': 201939}]),
+            pd.DataFrame([{'PLAYER_ID': True, 'PLAYER': 'Stephen Curry'}]),
+            pd.DataFrame([{'PLAYER_ID': 1.5, 'PLAYER': 'Stephen Curry'}]),
+            pd.DataFrame([{'PLAYER_ID': 201939, 'PLAYER': None}]),
+        ]
+        for frame in frames:
+            with self.subTest(frame=frame):
+                loader = self.make_loader(season='2026-27')
+                loader.get_team_roster = Mock(return_value=frame)
+                loader._retry_http_get = Mock(return_value=FakeHTTPResponse(self.analysis_roster_payload()))
+                with patch('src.data_loader.current_season', return_value='2026-27'):
+                    self.assertEqual(loader.get_analysis_roster(1610612744)['source'], 'espn')
+
+    def test_analysis_roster_does_not_start_fallback_after_request_budget(self):
+        from src.data_loader import RequestBudgetExceeded
+        loader = self.make_loader(season='2026-27')
+        loader.get_team_roster = Mock(side_effect=RequestBudgetExceeded('out of time'))
+        loader._retry_http_get = Mock()
+        with self.assertRaises(RequestBudgetExceeded):
+            loader.get_analysis_roster(1610612744)
+        loader._retry_http_get.assert_not_called()
+
+    def test_analysis_roster_rejects_invalid_team_before_network(self):
+        loader = self.make_loader(season='2026-27')
+        loader.get_team_roster = Mock()
+        for team in (True, 1.5, None, 'bogus', 123):
+            with self.subTest(team=team), self.assertRaises(ValueError):
+                loader.get_analysis_roster(team)
+        loader.get_team_roster.assert_not_called()
 
     def test_missing_espn_events_is_not_a_verified_empty_slate(self):
         loader = self.make_loader()
@@ -463,6 +624,7 @@ class DataLoaderTest(unittest.TestCase):
         games = loader._fetch_espn_games_for_date('2026-01-01')
         self.assertEqual(len(games), 1)
         self.assertIsNone(games[0]['status'])
+        self.assertEqual(games[0]['start_time'], event['date'])
 
     def test_primary_cache_does_not_inherit_an_unrelated_fallback_warning(self):
         loader = self.make_loader()
@@ -498,6 +660,120 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(loader._retry_api_call.call_args.kwargs['date_to_nullable'], '10/09/2025')
         with self.assertRaises(ValueError):
             loader.get_preseason_player_gamelog(1.5)
+
+    @staticmethod
+    def espn_preseason_history_payload():
+        return {
+            'names': ['minutes', 'totalRebounds'],
+            'seasonTypes': [
+                {'displayName': '2026-27 Preseason', 'categories': [{'events': [
+                    {'eventId': 'pre-1', 'stats': ['13', '6']},
+                    {'eventId': 'pre-2', 'stats': ['15', '7']},
+                ]}]},
+                {'displayName': '2026-27 Regular Season', 'categories': [{'events': [
+                    {'eventId': 'regular', 'stats': ['35', '20']},
+                ]}]},
+                {'displayName': '2025-26 Preseason', 'categories': [{'events': [
+                    {'eventId': 'old-preseason', 'stats': ['18', '9']},
+                ]}]},
+            ],
+            'events': {
+                'pre-1': {'gameDate': '2026-10-03T23:00:00Z', 'team': {'abbreviation': 'MIA'},
+                          'opponent': {'abbreviation': 'TOR'}, 'atVs': '@'},
+                'pre-2': {'gameDate': '2026-10-04T23:00:00Z', 'team': {'abbreviation': 'MIA'},
+                          'opponent': {'abbreviation': 'TOR'}, 'atVs': 'vs'},
+            },
+        }
+
+    def test_preseason_fallback_excludes_regular_and_other_years_replays_provenance(self):
+        loader = self.make_loader(season='2026-27')
+        loader._retry_api_call = Mock(side_effect=ReadTimeout('offline'))
+        loader._espn_player_resource = Mock(return_value=({}, self.espn_preseason_history_payload()))
+        frame = loader.get_preseason_player_gamelog(1628389, as_of='2026-10-04')
+        self.assertEqual(frame['GAME_ID'].tolist(), ['pre-1'])
+        self.assertEqual(frame['REB'].tolist(), [6])
+        self.assertEqual(frame['MIN'].tolist(), [13])
+        self.assertEqual(frame['TEAM_ID'].tolist(), [1610612748])
+        self.assertEqual(frame.attrs['season_type'], 'Pre Season')
+        self.assertEqual(frame.attrs['source'], 'espn')
+        self.assertTrue(frame.attrs['analysis_only'])
+        loader.reset_data_source_metadata()
+        cached = loader.get_preseason_player_gamelog(1628389, as_of='2026-10-04')
+        self.assertEqual(cached.attrs, frame.attrs)
+        self.assertEqual(loader.get_data_source_metadata()['status'], 'degraded')
+        self.assertEqual(loader.get_data_source_metadata()['source'], 'espn')
+        loader._retry_api_call.assert_called_once()
+        loader._espn_player_resource.assert_called_once_with(1628389, 'gamelog', '2026-27')
+
+    def test_preseason_primary_verified_empty_does_not_fetch_fallback(self):
+        loader = self.make_loader(season='2026-27')
+        loader._retry_api_call = Mock(return_value=FakeEndpointResponse(pd.DataFrame()))
+        loader._espn_player_resource = Mock()
+        self.assertTrue(loader.get_preseason_player_gamelog(1628389, as_of='2026-10-03').empty)
+        self.assertTrue(loader.get_preseason_player_gamelog(1628389, as_of='2026-10-03').empty)
+        loader._retry_api_call.assert_called_once()
+        loader._espn_player_resource.assert_not_called()
+
+    def test_preseason_explicit_espn_empty_and_cutoff_empty_keep_source(self):
+        for explicit_empty in (True, False):
+            with self.subTest(explicit_empty=explicit_empty):
+                payload = self.espn_preseason_history_payload()
+                if explicit_empty:
+                    payload['seasonTypes'][0]['categories'][0]['events'] = []
+                loader = self.make_loader(season='2026-27')
+                loader._retry_api_call = Mock(side_effect=ReadTimeout('offline'))
+                loader._espn_player_resource = Mock(return_value=({}, payload))
+                frame = loader.get_preseason_player_gamelog(1628389, as_of='2026-10-03')
+                self.assertTrue(frame.empty)
+                loader.reset_data_source_metadata()
+                self.assertTrue(loader.get_preseason_player_gamelog(1628389, as_of='2026-10-03').empty)
+                self.assertEqual(loader.get_data_source_metadata()['source'], 'espn')
+                loader._espn_player_resource.assert_called_once()
+
+    def test_preseason_missing_espn_history_is_unavailable_not_empty(self):
+        no_preseason = self.espn_preseason_history_payload()
+        no_preseason['seasonTypes'] = no_preseason['seasonTypes'][1:]
+        for payload in ({'filters': [{'name': 'league', 'value': 'nba'}]}, {}, no_preseason):
+            with self.subTest(payload=payload):
+                loader = self.make_loader(season='2026-27')
+                loader._retry_api_call = Mock(side_effect=ReadTimeout('offline'))
+                loader._espn_player_resource = Mock(return_value=({}, payload))
+                with self.assertRaises(DataUnavailableError):
+                    loader.get_preseason_player_gamelog(1628389, as_of='2026-10-04')
+
+    def test_preseason_corrupt_espn_rows_are_not_silently_empty_history(self):
+        for corruption in ('negative', 'fractional', 'bool', 'missing_date', 'wrong_year', 'missing_event', 'missing_stats'):
+            with self.subTest(corruption=corruption):
+                payload = self.espn_preseason_history_payload()
+                stats = payload['seasonTypes'][0]['categories'][0]['events'][0]['stats']
+                if corruption == 'negative':
+                    stats[1] = '-1'
+                elif corruption == 'fractional':
+                    stats[1] = '6.5'
+                elif corruption == 'bool':
+                    stats[1] = True
+                elif corruption == 'missing_date':
+                    payload['events']['pre-1'].pop('gameDate')
+                elif corruption == 'wrong_year':
+                    payload['events']['pre-1']['gameDate'] = '2025-10-03T23:00:00Z'
+                elif corruption == 'missing_event':
+                    payload['events'].pop('pre-1')
+                elif corruption == 'missing_stats':
+                    stats.clear()
+                loader = self.make_loader(season='2026-27')
+                loader._retry_api_call = Mock(side_effect=ReadTimeout('offline'))
+                loader._espn_player_resource = Mock(return_value=({}, payload))
+                with self.assertRaises(DataUnavailableError):
+                    loader.get_preseason_player_gamelog(1628389, as_of='2026-10-04')
+
+    def test_preseason_budget_expiry_does_not_start_fallback(self):
+        from src.data_loader import RequestBudgetExceeded
+        loader = self.make_loader(season='2026-27')
+        loader._retry_api_call = Mock(side_effect=RequestBudgetExceeded('out of time'))
+        loader._espn_player_resource = Mock()
+        with self.assertRaises(RequestBudgetExceeded):
+            loader.get_preseason_player_gamelog(1628389, as_of='2026-10-04')
+        loader._espn_player_resource.assert_not_called()
 
     def test_same_day_and_future_rest_history_are_not_treated_as_back_to_back(self):
         for day in ('2025-03-14', '2025-03-15'):
@@ -726,6 +1002,18 @@ class DataLoaderTest(unittest.TestCase):
         with patch('src.cache.time.monotonic', return_value=1061):
             loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-01-01')
         self.assertEqual(loader._retry_http_get.call_count, 2)
+
+    def test_odds_feed_uses_explicit_preseason_key_and_separates_event_cache(self):
+        loader = NBADataLoader()
+        loader._retry_http_get = Mock(return_value=Mock(json=Mock(return_value=[])))
+        loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-10-04')
+        loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-10-04', sport_key='basketball_nba_preseason')
+        urls = [call.args[0] for call in loader._retry_http_get.call_args_list]
+        self.assertEqual(len(urls), 2)
+        self.assertIn('/basketball_nba/events', urls[0])
+        self.assertIn('/basketball_nba_preseason/events', urls[1])
+        with self.assertRaises(ValueError):
+            loader.get_odds_for_game('key', 'BOS', 'LAL', '2026-10-04', sport_key='../bad')
 
     def test_bad_event_response_is_not_cached(self):
         loader = self.make_loader()

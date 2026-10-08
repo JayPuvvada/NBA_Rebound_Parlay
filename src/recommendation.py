@@ -23,6 +23,8 @@ ACTIONABLE_TIERS = {
 
 
 def _probability(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a probability in [0, 1]")
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -35,9 +37,10 @@ def _probability(value: Any, name: str) -> float:
 def weighted_hit_rate(trend_data, line, direction):
     """Return a recency-weighted, push-excluded historical hit rate.
 
-    ``trend_data`` is expected oldest-to-newest. Invalid observations are
-    ignored. The returned sample count includes all valid games, while integer
-    pushes do not enter the hit-rate denominator.
+    ``trend_data`` is expected oldest-to-newest. Only nonnegative whole rebound
+    counts are observations (including zero and numeric strings, not booleans).
+    The returned sample count includes all valid games, while integer pushes
+    do not enter the hit-rate denominator.
     """
     if not trend_data or line is None or direction not in ("OVER", "UNDER"):
         return 0.0, 0
@@ -52,11 +55,14 @@ def weighted_hit_rate(trend_data, line, direction):
     for game in trend_data:
         if not isinstance(game, dict):
             continue
+        value = game.get("rebounds")
+        if isinstance(value, bool):
+            continue
         try:
-            rebounds = float(game.get("rebounds"))
+            rebounds = float(value)
         except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(rebounds):
+        if math.isfinite(rebounds) and rebounds >= 0 and rebounds.is_integer():
             valid_values.append(rebounds)
 
     hit_weight = 0.0
@@ -100,18 +106,35 @@ def tier_from_signals(
     not used as a separate "safe" rule: falling outside a predictive interval is
     already represented in confidence, and no wager is intrinsically safe.
     """
-    del floor_val, push_probability
+    del floor_val
     if direction not in ("OVER", "UNDER") or line is None:
+        return "AVOID", "red"
+    # bool is a numeric subtype in Python; accepting it (or truncating a
+    # fractional sample count) can turn malformed signals into a real bet.
+    if any(isinstance(value, bool) for value in (line, n_games, mean_proj, ev_roi, edge)):
+        return "AVOID", "red"
+    if not isinstance(high_variance, bool) or not any(
+        odds_available is value for value in (None, True, False)
+    ):
         return "AVOID", "red"
     try:
         confidence = _probability(confidence, "confidence")
         hit_rate = _probability(hit_rate, "hit_rate")
-        games = int(n_games)
+        push_probability = _probability(push_probability, "push_probability")
+        games = float(n_games)
+        line = float(line)
         projection = float(mean_proj) if mean_proj is not None else None
     except (ValueError, TypeError, OverflowError):
         return "AVOID", "red"
 
-    if projection is not None and (not math.isfinite(projection) or projection < MIN_TIER_PROJECTION):
+    if (
+        not math.isfinite(line) or line < 0
+        or not math.isfinite(games) or games < 0 or not games.is_integer()
+        or confidence + push_probability > 1 + 1e-12
+        or (projection is not None and (not math.isfinite(projection) or projection < 0))
+    ):
+        return "AVOID", "red"
+    if projection is not None and projection < MIN_TIER_PROJECTION:
         return "LOW_VOLUME", "gray"
     if games < MIN_TREND_GAMES:
         return "INSUFFICIENT_DATA", "gray"
@@ -123,7 +146,10 @@ def tier_from_signals(
         price_edge = float(edge) if edge is not None else expected_roi
     except (TypeError, ValueError, OverflowError):
         return "AVOID", "red"
-    if not math.isfinite(expected_roi) or not math.isfinite(price_edge):
+    if (
+        not math.isfinite(expected_roi) or not math.isfinite(price_edge)
+        or (edge is not None and not -1 <= price_edge <= 1)
+    ):
         return "AVOID", "red"
     if expected_roi < MIN_ACTIONABLE_EV or price_edge <= 0:
         return "AVOID", "red"
@@ -201,7 +227,11 @@ def _normalize_quote(value: Any, inherited: dict | None = None) -> dict | None:
         return None
     inherited = inherited or {}
     line = value.get("line", value.get("point", inherited.get("line", inherited.get("point"))))
-    odds = value.get("odds", value.get("price", inherited.get("odds", inherited.get("price"))))
+    # Shared metadata may contain a legacy OVER price. A nested side must
+    # supply its own price instead of silently inheriting the other side's.
+    odds = value.get("odds", value.get("price"))
+    if isinstance(line, bool) or isinstance(odds, bool):
+        return None
     try:
         line = float(line)
         odds_float = float(odds)
@@ -215,13 +245,8 @@ def _normalize_quote(value: Any, inherited: dict | None = None) -> dict | None:
         "odds": int(odds_float) if odds_float.is_integer() else odds_float,
         "book": value.get("book", value.get("bookmaker", inherited.get("book", inherited.get("bookmaker")))),
         "source": value.get("source", inherited.get("source")),
-        "updated_at": value.get(
-            "updated_at",
-            value.get(
-                "fetched_at",
-                inherited.get("updated_at", inherited.get("fetched_at")),
-            ),
-        ),
+        # Download time says nothing about the age of the sportsbook quote.
+        "updated_at": value.get("updated_at", inherited.get("updated_at")),
     }
 
 
@@ -241,13 +266,14 @@ def normalize_prop_odds(odds_entry: Any) -> dict[str, dict | None]:
     if not isinstance(odds_entry, dict):
         return normalized
 
+    has_nested_sides = any(key in odds_entry for key in ('over', 'Over', 'OVER', 'under', 'Under', 'UNDER'))
     for side in ("over", "under"):
         nested = odds_entry.get(side, odds_entry.get(side.upper(), odds_entry.get(side.title())))
         quote = _normalize_quote(nested, odds_entry)
         if quote:
             normalized[side] = quote
 
-    if normalized["over"] is None and normalized["under"] is None:
+    if not has_nested_sides:
         side = str(odds_entry.get("side", odds_entry.get("direction", "OVER"))).upper()
         target = "under" if side == "UNDER" else "over"
         normalized[target] = _normalize_quote(odds_entry)
@@ -268,9 +294,11 @@ def select_best_bet(candidates, *, actionable_only=False):
             continue
         if actionable_only and not is_actionable_tier(candidate.get("tier")):
             continue
+        if isinstance(candidate.get("ev_roi"), bool):
+            continue
         try:
             roi = float(candidate.get("ev_roi"))
-            confidence = float(candidate.get("confidence"))
+            confidence = _probability(candidate.get("confidence"), "confidence")
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(roi) and math.isfinite(confidence) and roi > 0:
@@ -281,4 +309,4 @@ def select_best_bet(candidates, *, actionable_only=False):
 
 
 def is_actionable_tier(tier: str | None) -> bool:
-    return tier in ACTIONABLE_TIERS
+    return isinstance(tier, str) and tier in ACTIONABLE_TIERS

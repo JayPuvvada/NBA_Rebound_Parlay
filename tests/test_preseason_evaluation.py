@@ -4,6 +4,41 @@ from src.preseason_evaluation import evaluate_preseason
 
 
 class PreseasonEvaluationTests(unittest.TestCase):
+    def test_scenario_profile_obeys_prior_threshold_and_chronological_minutes(self):
+        _, preseason = self.frames()
+        prior = pd.DataFrame([{'GAME_ID':f'p{i}', 'GAME_DATE':f'2025-01-{i+1:02d}', 'MIN':15,'REB':6} for i in range(10)])
+        result = evaluate_preseason(prior,preseason,scenario_profile=True)
+        self.assertEqual(result['evaluated_games'],1)
+        self.assertEqual(result['games'][0]['projection'],4)
+        self.assertEqual(result['games'][0]['rate_source'],'prior_regular')
+        self.assertEqual(result['games'][0]['estimated_minutes'],10)
+        self.assertEqual(evaluate_preseason(prior.iloc[:9],preseason,scenario_profile=True)['evaluated_games'],0)
+        changed = preseason.copy()
+        changed.loc[1,['MIN','REB']] = [48,40]
+        self.assertEqual(evaluate_preseason(prior,changed,scenario_profile=True)['games'][0]['projection'],4)
+
+    def test_scenario_profile_fallback_without_prior_requires_three_appearances(self):
+        preseason = pd.DataFrame([{'GAME_ID':f'a{i}','GAME_DATE':f'2025-10-{i+1:02d}','MIN':15,'REB':3} for i in range(4)])
+        result = evaluate_preseason(pd.DataFrame(),preseason,scenario_profile=True)
+        self.assertEqual(result['evaluated_games'],1)
+        self.assertEqual(result['skipped_games'],3)
+        self.assertEqual(result['games'][0]['rate_source'],'current_preseason')
+        self.assertEqual(result['games'][0]['projection'],3)
+        self.assertIsNone(result['naive_prior_mae'])
+        self.assertEqual(result['naive_prior_evaluated_games'],0)
+
+    def test_invalid_boolean_fractional_and_clock_rows_are_excluded(self):
+        prior, preseason = self.frames()
+        invalid = pd.DataFrame([
+            {'GAME_ID':'bad-bool-min', 'GAME_DATE':'2025-10-02', 'MIN':True, 'REB':2},
+            {'GAME_ID':'bad-bool-reb', 'GAME_DATE':'2025-10-02', 'MIN':10, 'REB':True},
+            {'GAME_ID':'bad-fraction', 'GAME_DATE':'2025-10-02', 'MIN':10, 'REB':2.5},
+            {'GAME_ID':'bad-clock', 'GAME_DATE':'2025-10-02', 'MIN':'10:99', 'REB':2},
+        ])
+        result = evaluate_preseason(prior, pd.concat([preseason,invalid],ignore_index=True))
+        self.assertEqual(result['sample_counts']['preseason']['excluded_rows'],4)
+        self.assertEqual(result['games'][0]['projection'],4)
+
     def frames(self):
         return (pd.DataFrame([{'GAME_ID': 'prior', 'GAME_DATE': '2024-12-01', 'MIN': 30, 'REB': 12}]),
                 pd.DataFrame([{'GAME_ID': 'a', 'GAME_DATE': '2025-10-01', 'MIN': 10, 'REB': 3},

@@ -15,6 +15,7 @@ export interface PersonalState {
   save: (pick: SavedPick) => boolean | Promise<boolean>;
   remove: (id: string) => void;
   grade: (id: string, result: PickResult) => void;
+  notes?: (id: string, notes: string) => void;
   refresh?: () => void;
 }
 export const PersonalContext = createContext<PersonalState | null>(null);

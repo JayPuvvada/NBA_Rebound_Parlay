@@ -16,6 +16,22 @@ after(async () => { await server?.close(); });
 const data = { player: 'Nikola Jokic', opponent: 'LAL', date: '2026-10-20', projection: 13.3, prediction_eligible: true };
 const metrics = { direction: 'OVER', actionable: true, line: 12.5, american_odds: -110, tier: 'PLAY' };
 const state = { signedIn: true, picks: [], error: '', login: () => true, logout() {}, save() {}, remove() {}, grade() {} };
+test('synthetic quote provenance always forces a sample snapshot', () => {
+  const quote={market:'player_rebounds',player:'Jarrett Allen',team:'CLE',selection:'OVER',line:8.5,odds:-110,book:'fanduel',source:'synthetic-local-test'};
+  const context={date:'2026-10-08',home:'CLE',away:'BOS',sport:'basketball_nba_preseason',demo:false};
+  assert.equal(lib.buildSelectionSnapshot(quote,context).demo,true);
+  assert.equal(lib.buildSelectionSnapshot({...quote,source:'the-odds-api'},context).demo,false);
+});
+test('note drafts follow saved changes without discarding unsaved edits', () => {
+  const clean = {base:'old',value:'old',conflict:false};
+  assert.deepEqual(lib.reconcileNoteDraft(clean,'remote'),{base:'remote',value:'remote',conflict:false});
+  const editing = {base:'old',value:'draft',conflict:false};
+  const acknowledged = lib.reconcileNoteDraft(editing,'draft');
+  assert.deepEqual(acknowledged,{base:'draft',value:'draft',conflict:false});
+  assert.deepEqual(lib.reconcileNoteDraft(acknowledged,'new remote'),{base:'new remote',value:'new remote',conflict:false});
+  assert.deepEqual(lib.reconcileNoteDraft(editing,'remote'),{base:'remote',value:'draft',conflict:true});
+  assert.equal(lib.reconcileNoteDraft(editing,'old'),editing);
+});
 function render(component, props, value = state) {
   return renderToStaticMarkup(createElement(PersonalContext.Provider, { value }, createElement(component, props)));
 }
@@ -94,7 +110,7 @@ test('real account UI contains no demo credentials and marks database storage', 
   const account = { ...state, mode: 'account', username: 'owner', enabled: true };
   const loggedOut = render(MyPicks, {}, { ...account, signedIn: false });
   assert.match(loggedOut, /Public signup is not available yet/);
-  assert.match(loggedOut, /stored online/);
+  assert.match(loggedOut, /stored in the connected account database/);
   assert.doesNotMatch(loggedOut, /demo123|Test password|Test username/);
   const snapshot = lib.snapshotPick(data, metrics, false);
   assert.equal(snapshot.demo, false);
@@ -120,4 +136,41 @@ test('empty picks copy distinguishes loading and failure from an empty account',
   assert.match(failed, /does not mean your account is empty/);
   assert.doesNotMatch(failed, /No saved picks yet/);
   assert.match(render(MyPicks, {}, account), /No saved picks yet/);
+});
+
+const quote = {market:'h2h',selection:'Denver Nuggets',line:null,odds:-120,book:'FanDuel',fetched_at:'2026-10-04T12:00:00Z'};
+const context = {date:'2026-10-05',home:'Denver Nuggets',away:'Los Angeles Lakers',sport:'basketball_nba',event_id:'game-1'};
+test('general manual snapshots preserve null h2h line and signed spreads without inventing a model', () => {
+  const p = lib.buildSelectionSnapshot(quote,context);
+  assert.equal(p.version,2); assert.equal(p.kind,'manual_pick'); assert.equal(p.projection,null); assert.equal(p.player,null);
+  assert.equal(p.line,null); assert.equal(p.direction,null); assert.equal(p.demo,false);
+  assert.equal(lib.isSavedPick(p),true);
+  const spread = lib.buildSelectionSnapshot({...quote,market:'spreads',line:-5.5},context);
+  assert.equal(spread.line,-5.5);
+  for(const bad of [{...quote,market:'totals',line:null},{...quote,odds:0},{...quote,market:'player_rebounds',line:8.5},{...quote,book:''}]) assert.throws(()=>lib.buildSelectionSnapshot(bad,context));
+});
+test('duplicate fingerprint ignores clocks but changes for material assumptions and quote changes', () => {
+  const quote={market:'player_rebounds',selection:'OVER',player:'Jokic',line:12.5,odds:-110,book:'FanDuel'};
+  const assessment={projection:13.3,model_version:'v7',profile:'preseason',assumptions:{minutes:25,pace:101},generated_at:'2026-10-04T12:00:00Z'};
+  const a=lib.buildSelectionSnapshot(quote,context,assessment);
+  const b=lib.buildSelectionSnapshot({...quote,fetched_at:'2026-10-04T13:00:00Z',updated_at:'2026-10-04T13:00:00Z'},context,{...assessment,generated_at:'2026-10-04T13:00:00Z',assumptions:{pace:101,minutes:25}});
+  assert.notEqual(a.id,b.id); assert.equal(a.fingerprint,b.fingerprint);
+  assert.equal(a.kind,'experimental_model_pick');
+  assert.notEqual(a.fingerprint,lib.buildSelectionSnapshot(quote,context,{...assessment,assumptions:{minutes:30,pace:101}}).fingerprint);
+  assert.notEqual(a.fingerprint,lib.buildSelectionSnapshot({...quote,odds:-125},context,assessment).fingerprint);
+  assessment.assumptions.minutes=5; assert.equal(a.assumptions.minutes,25);
+});
+test('mixed-version decoder preserves legacy IDs and results while skipping unknown rows', () => {
+  const old={...lib.snapshotPick(data,metrics),result:'Win'};
+  const current=lib.buildSelectionSnapshot(quote,context);
+  const decoded=lib.decodePicks([old,current,{...current,version:99},null]);
+  assert.equal(decoded.skipped,2); assert.equal(decoded.picks[0].id,old.id); assert.equal(decoded.picks[0].result,'Win');
+});
+test('CSV neutralizes formulas and renders a general quote journal without fabricated projection', () => {
+  const p={...lib.buildSelectionSnapshot(quote,context),notes:'=HYPERLINK("bad")',result:'Void'};
+  const csv=lib.picksCsv([p]);
+  assert.ok(csv.includes("'=HYPERLINK")); assert.ok(csv.includes('"\'\-120"')); assert.match(csv,/Void/);
+  const markup=render(MyPicks,{}, {...state,mode:'account',picks:[p],notes(){}});
+  assert.match(markup,/Saved manual pick/); assert.match(markup,/Export filtered CSV/); assert.match(markup,/Save notes/);
+  assert.doesNotMatch(markup,/Projection: null|Projected rebounds/);
 });

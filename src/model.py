@@ -104,14 +104,19 @@ class ReboundSimulator:
 
     @staticmethod
     def _variance_sample_size(projection_data: dict, player_variance: dict) -> int | None:
+        """Return a valid observed count, distinguishing missing from malformed."""
         for key in ("sample_size", "games_played", "n_games"):
             value = player_variance.get(key)
             if value is not None:
+                if isinstance(value, (bool, np.bool_)):
+                    raise ValueError(f"{key} must be a non-negative integer")
                 try:
-                    value = int(value)
-                except (TypeError, ValueError, OverflowError):
-                    return None
-                return value if value >= 0 else None
+                    count = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f"{key} must be a non-negative integer") from exc
+                if not math.isfinite(count) or count < 0 or not count.is_integer():
+                    raise ValueError(f"{key} must be a non-negative integer")
+                return int(count)
         trend = projection_data.get("trend_data")
         if isinstance(trend, (list, tuple)) and trend:
             return len(trend)
@@ -169,8 +174,16 @@ class ReboundSimulator:
             empirical_valid = False
 
         if empirical_valid:
+            try:
+                empirical_games = self._variance_sample_size(projection_data, variance_data)
+            except ValueError:
+                # An explicitly invalid count is not unknown sample size and
+                # must not qualify for the fallback empirical weight.
+                empirical_valid = False
+                fano_source = "heuristic_invalid_sample"
+
+        if empirical_valid:
             raw_empirical_fano = reb_var / reb_mean
-            empirical_games = self._variance_sample_size(projection_data, variance_data)
             if empirical_games is None:
                 empirical_weight = 0.35
             elif empirical_games >= self.MIN_EMPIRICAL_GAMES:

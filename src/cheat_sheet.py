@@ -17,6 +17,7 @@ from src.recommendation import (
     weighted_hit_rate,
 )
 from src.utils import get_logger, normalize_name
+from src.projection_safety import projection_eligibility
 
 
 log = get_logger("cheat_sheet")
@@ -234,17 +235,18 @@ def project_team(
                 continue
 
             mean_proj = float(proj_data["projection"])
-            projection_metadata = dict(proj_data.get("metadata") or {})
-            eligibility_signal = projection_metadata.get("prediction_eligible")
-            prediction_eligible = eligibility_signal is True
-            limitations = list(projection_metadata.get("limitations") or [])
-            if eligibility_signal is not True and eligibility_signal is not False:
-                limitations.append(
-                    "projection safety metadata did not explicitly authorize a live pick"
-                )
+            raw_metadata = proj_data.get('metadata')
+            projection_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            prediction_eligible, limitations = projection_eligibility(proj_data)
             projection_metadata["prediction_eligible"] = prediction_eligible
             projection_metadata["limitations"] = list(dict.fromkeys(limitations))
             limitations = projection_metadata["limitations"]
+            data_freshness = proj_data.get('data_freshness')
+            if data_freshness is not None and not isinstance(data_freshness, dict):
+                data_freshness = {}
+            if isinstance(data_freshness, dict):
+                data_freshness = {**data_freshness, 'prediction_eligible': prediction_eligible,
+                                  'limitations': list(limitations)}
             sim_result = simulator.simulate(
                 proj_data,
                 player_variance=proj_data.get("player_variance"),
@@ -430,7 +432,7 @@ def project_team(
                 "injuries": injuries,
                 "components": proj_data.get("components", {}),
                 "trend": proj_data.get("trend_data", []),
-                "data_freshness": proj_data.get("data_freshness"),
+                "data_freshness": data_freshness,
                 "metadata": projection_metadata,
                 "summary": summary,
                 # Compatibility aliases; all remain raw fractions.

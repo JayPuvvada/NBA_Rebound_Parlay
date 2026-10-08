@@ -1,12 +1,17 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import type { SavedPick, PickResult } from "./personal-picks";
-import { isSavedPick } from "./personal-picks";
+import { decodePicks } from "./personal-picks";
 
-export const PICK_COLUMNS = "id,player,opponent,date,projection,direction,line,odds,bookmaker,savedAt,result,demo";
+export const LEGACY_PICK_COLUMNS = "id,player,opponent,date,projection,direction,line,odds,bookmaker,savedAt,result,demo";
+export const PICK_COLUMNS = LEGACY_PICK_COLUMNS + ",version,kind,fingerprint,sport,event_id,home,away,market,selection,team,quote_updated_at,quote_fetched_at,source,model_version,profile,assumptions,analysis,model_generated_at,notes";
+const v2Fields = ['version','kind','fingerprint','sport','event_id','home','away','market','selection','team','quote_updated_at','quote_fetched_at','source','model_version','profile','assumptions','analysis','model_generated_at'] as const;
+const missingSchema = (error: {code?: string; message?: string} | null) => !!error && (error.code === '42703' || error.code === 'PGRST204');
 export function pickInsert(pick: SavedPick, userId: string) {
   // Pin the request to the initiating user; RLS validates it against the JWT.
   const { id, player, opponent, date, projection, direction, line, odds, bookmaker, demo } = pick;
-  return { user_id: userId, id, player, opponent, date, projection, direction, line, odds, bookmaker, demo };
+  const payload: Record<string, unknown> = { user_id: userId, id, player, opponent, date, projection, direction, line, odds, bookmaker, demo };
+  if (pick.version === 2) for (const key of v2Fields) payload[key] = pick[key] ?? null;
+  return payload;
 }
 export interface AccountView {
   mode: "account"; enabled: boolean; busy: boolean; signedIn: boolean;
@@ -20,6 +25,7 @@ export class SupabaseAccount {
   private generation = 0;
   private identityGeneration = 0;
   private changing = false;
+  private legacySchema = false;
   private listeners = new Set<() => void>();
   private client: SupabaseClient | null;
   constructor(client: SupabaseClient | null, setupError = "") {
@@ -62,23 +68,31 @@ export class SupabaseAccount {
       if (member.error) throw member.error;
       if (!member.data) throw Error("This account has not been granted access to saved picks. The owner must add it to app_pick_members.");
       const picks: SavedPick[] = [];
+      let skipped = 0;
       for (let offset = 0; ; offset += 500) {
         if (!isCurrent()) return;
-        const result = await this.client.from("app_saved_picks").select(PICK_COLUMNS).eq("user_id", userId)
+        let result: {data: unknown; error: {code?: string; message: string} | null} = await this.client.from("app_saved_picks").select(this.legacySchema ? LEGACY_PICK_COLUMNS : PICK_COLUMNS).eq("user_id", userId)
           .order("savedAt", { ascending: false }).order("id").range(offset, offset + 499);
+        if (!this.legacySchema && missingSchema(result.error)) {
+          this.legacySchema = true;
+          result = await this.client.from("app_saved_picks").select(LEGACY_PICK_COLUMNS).eq("user_id", userId)
+            .order("savedAt", { ascending: false }).order("id").range(offset, offset + 499);
+        }
         if (result.error) throw result.error;
-        if (!Array.isArray(result.data) || !result.data.every(isSavedPick)) {
+        if (!Array.isArray(result.data)) {
           throw Error('Saved-pick data has an unexpected format. Refresh to retry; no records have been deleted.');
         }
-        picks.push(...result.data);
+        const decoded = decodePicks(result.data);
+        picks.push(...decoded.picks); skipped += decoded.skipped;
         if (result.data.length < 500) break;
       }
-      if (isCurrent()) this.update({ picks, busy: false, error: "" });
+      if (isCurrent()) this.update({ picks, busy: false, error: [this.legacySchema ? "New selection saving is unavailable until the saved-picks database upgrade is applied. Existing picks remain available." : "", skipped ? `${skipped} saved record(s) have an unexpected format and were skipped. No records have been deleted.` : ""].filter(Boolean).join(" ") });
     } catch (error) { if (isCurrent()) { this.update({ picks: [] }); this.fail(error); } }
   }
   refresh = async () => {
     if (!this.client || this.changing) return;
     const current = this.generation;
+    this.legacySchema = false;
     try {
       const { data, error } = await this.client.auth.getSession();
       if (error) throw error;
@@ -154,7 +168,16 @@ export class SupabaseAccount {
       else if (this.user) void this.load();
     }
   }
-  save = (pick: SavedPick) => this.change((client, userId) => client.from("app_saved_picks").insert(pickInsert(pick, userId)), true);
+  save = (pick: SavedPick) => {
+    if (pick.version === 2 && this.legacySchema) {
+      this.update({ error: "New selection saving is unavailable until the saved-picks database upgrade is applied." });
+      return Promise.resolve(false);
+    }
+    if (this.user && !this.view.busy && this.view.picks.some(p => p.id === pick.id || pick.fingerprint && p.fingerprint === pick.fingerprint)) return Promise.resolve(true);
+    return this.change((client, userId) => client.from("app_saved_picks").insert(pickInsert(pick, userId)), true)
+      .then(ok => ok && this.view.picks.some(p => p.id === pick.id || !!pick.fingerprint && p.fingerprint === pick.fingerprint));
+  };
   remove = (id: string) => this.change((client, userId) => client.from("app_saved_picks").delete().eq("user_id", userId).eq("id", id));
   grade = (id: string, result: PickResult) => this.change((client, userId) => client.from("app_saved_picks").update({ result }).eq("user_id", userId).eq("id", id));
+  notes = (id: string, notes: string) => this.change((client, userId) => client.from("app_saved_picks").update({ notes: notes.slice(0, 5000) }).eq("user_id", userId).eq("id", id));
 }

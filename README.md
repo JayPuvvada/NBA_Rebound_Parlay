@@ -1,4 +1,71 @@
-# NBA Rebound Projection Engine
+# NBA Picks
+
+## Local-first dashboard implementation
+
+The current redesign has three connected pages: **Picks & Lines**, **Player Research**,
+and **My Picks**. Schedules and sportsbook rebound lines work independently of NBA
+statistics. Rebound generation runs explicitly, preserving the regular-season model
+and labelling preseason, early-season and reduced-data scenarios experimental.
+
+See [implementation progress](docs/implementation-plan.md),
+[product/PM evidence](docs/product-case-study.md), and the local acceptance record
+below. Hosted deployment and the hosted account migration are not part of this rollout.
+
+The older guide below describes the earlier UI and remains a historical reference
+until the local release acceptance is complete.
+
+### Current pages
+
+- **Picks & Lines:** select a date, game and book; browse rebound Over/Under lines.
+  Generate rebounds explicitly when lines are offered. Missing quotes, incomplete players and source failures are
+  separate states. Refresh is manual; previously retrieved prices remain visibly stale.
+- **Player Research:** inspect separate competition samples, rebounds, minutes,
+  last-five/ten averages and recent appearances. Historical counts above/below/equal
+  to a line are observations, not probabilities. Optional manual model inputs expand.
+- **My Picks:** sign in to privately save complete selections or model snapshots.
+  The captured quote is immutable. Notes and manually recorded outcomes are editable;
+  the journal is not a record of placed bets or verified model performance.
+
+### Verification and operation
+
+Start commands, live-data evidence and remaining gates are maintained in
+[local release acceptance](docs/local-release-acceptance.md). Run backend tests with
+`ODDS_BUDGET_ENABLED=0 python3 -m unittest discover -s tests -q`; dedicated budget
+fixtures explicitly turn enforcement on. From `frontend`, run `npm test`,
+`npm run typecheck`, `npm run lint`, `npm run build`, and `npm run test:e2e`.
+Browser fixtures exercise behavior without claiming live-provider coverage.
+
+October 8 usability revision: the main page is rebound-only. Game-market tabs and
+book comparison were removed following owner feedback. Existing non-rebound saved
+records and operator endpoints remain intact. Old links to game markets normalize
+to rebound lines. Stale-price labels remain necessary for old rebound quotes;
+removing comparison does not make a cached price current.
+
+For a bounded local coverage check, run from the repository root:
+`python3 -m scripts.check_markets --date 2026-10-07 --home IND --away MIN --sport basketball_nba_preseason`.
+Choose the actual game/date to inspect. The default reuses valid cache; `--refresh`
+requests a metered refresh. `--group game` checks spreads/moneyline/totals instead.
+The command refuses disabled budget enforcement, omits secrets, and never generates
+or saves a pick. Offered prices alone do not verify a model recommendation.
+
+The approved local toolchain uses Tailwind 4.3.3 with its native Vite plugin.
+The existing dashboard theme is retained. Supported browser minimums are Safari
+16.4, Chrome 111 and Firefox 128; this migration does not claim older-browser support.
+See the [official upgrade guide](https://tailwindcss.com/docs/upgrade-guide).
+
+Local quotas/cache persist in ignored `data/odds-cache.db`: at most 16 credits per
+UTC day, 450 per provider cycle, preserving 50 provider credits. Unknown paid timeout
+charges stay reserved conservatively. Free hosted instances need a durable shared
+store before paid refreshes can be enabled safely; changing hosts is not an NBA Stats fix.
+
+Regular recommendations retain the existing eligibility safeguards. Experimental
+profiles use versioned sample/minutes assumptions and never authorize the legacy
+operator ledger. When the provider offers no rebound props, no real quoted pick can
+be generated; manual research remains available and labelled.
+
+---
+
+## Earlier guide and change history
 
 A guide to the web app, its model, and the recent changes.
 
@@ -11,11 +78,13 @@ multi-leg probabilities, place bets, or connect to your sportsbook account.
 Its projections and recommendation tiers are heuristic model outputs, not
 guarantees of accuracy or profit.
 
-**Readiness update:** September 21, 2026. Local reliability improvements include
+**Readiness update:** October 4, 2026. Local reliability improvements include
 bounded source requests, partial-result handling, price-freshness safeguards,
 and historical team lookup without unnecessary current-roster requests.
 These changes do not guarantee NBA connectivity or model accuracy. Recognized
-preseason games are analysis-only; the exploratory historical audit is not a
+preseason games now open a separate player-research screen: real roster/history
+retrieval plus optional, explicitly assumed minutes scenarios. It uses a labeled
+current-season roster fallback and does not issue betting picks. This is not a
 validated preseason forecasting model. See [current reliability checks](docs/reliability-checklist.md)
 and [preseason readiness](docs/preseason-readiness.md) for verified work and gaps.
 The September 5 change audit below remains anchored to `0f0b903`, not a complete
@@ -836,7 +905,7 @@ These are the additional application changes between `522e430` and
     recovery after cooldown, source labels, actual totals, schedule edge
     cases, and bounded rest.
 
-The amended commit also includes `test_proxy_scraper.py`. It is a local
+The amended commit also includes the diagnostic now located at `scripts/manual/test_proxy_scraper.py`. It is a local
 diagnostic, not part of the web request path or a general production fix.
 
 ## 10. Complete changed-file map
@@ -875,7 +944,7 @@ were newly created.
 | Frontend runtime/dependencies | `frontend/.nvmrc`, `frontend/package.json`, `frontend/package-lock.json` | Node declaration, scripts and locked dependency metadata. |
 | Backend runtime/dependencies | `.python-version`, `requirements.txt` | Python declaration and pinned requirements. |
 | Configuration/deployment | `.env.example`, `.gitignore`, `Procfile`, `build.sh`, `.github/workflows/ci.yml` | Configurable settings, ignore rules, reproducible build, threaded serving and automated checks. |
-| Live diagnostic scripts | `test_predict.py`, `test_predict_local.py`, `test_proxies.py`, `test_proxy_scraper.py` | Manual request/proxy troubleshooting; not normal unit tests or browser features. |
+| Live diagnostic scripts | `scripts/manual/test_predict.py`, `scripts/manual/test_predict_local.py`, `scripts/manual/test_proxies.py`, `scripts/manual/test_proxy_scraper.py` | Manual request/proxy troubleshooting; not normal unit tests or browser features. |
 | API/data tests | `tests/test_app.py`, `tests/test_data_loader.py`, `tests/test_cheat_sheet.py` | Validation, schedule/eligibility, recovery, pricing, partial failure and persistence contracts. |
 | Model/math tests | `tests/test_features.py`, `tests/test_model.py`, `tests/test_recommendation.py`, `tests/test_utils.py` | Statistical boundaries, cutoff/variance logic, probability/pricing math and tier behavior. |
 | Cache/ledger tests | `tests/test_cache.py`, `tests/test_cache_manager.py`, `tests/test_ledger.py`, `tests/test_grade.py` | Concurrency/mutation, freshness, atomic persistence, identity, migration and settlement. |
@@ -1095,11 +1164,12 @@ price/line pairing, reduced metrics, missing data, source/eligibility guards,
 pushes, warnings, and both result entry points. They are not a full browser
 end-to-end suite or a live-provider check.
 
-Use the scoped `tests/` command. Standalone `test_predict.py`,
-`test_predict_local.py`, and `test_proxies.py` have direct-execution guards.
+Use the scoped `tests/` command. Diagnostics live in `scripts/manual/`; run
+them from the project root with `python3 -m scripts.manual.test_predict` (or the appropriate module).
+`test_predict.py`, `test_predict_local.py`, and `test_proxies.py` have direct-execution guards.
 `test_proxy_scraper.py` is a separate ad-hoc diagnostic that runs at top
 level and can print proxy configuration; do not indiscriminately import/run
-all root `test_*.py` files or share their raw output.
+all diagnostic modules or share their raw output.
 
 ### What remains limited or unproven
 

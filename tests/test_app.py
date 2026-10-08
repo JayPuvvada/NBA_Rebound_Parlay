@@ -237,6 +237,47 @@ class PredictContractTests(AppTestCase):
         self.assertIsNone(payload["analysis"]["direction"])
         self.assertIn("explicitly authorize", " ".join(payload["limitations"]))
 
+    def test_conflicting_safety_signals_cannot_be_upgraded_by_positive_metadata(self):
+        for change in (
+            {'prediction_eligible': False, 'limitations': ['upstream restriction']},
+            {'data_freshness': {'prediction_eligible': False, 'limitations': ['upstream restriction']}},
+            {'data_freshness': {'prediction_eligible': True, 'projection_inputs': {
+                'status': 'degraded', 'limitations': ['upstream restriction']}}},
+        ):
+            with self.subTest(change=change):
+                projection = self.engineer.compute_composite_projection()
+                projection.update(change)
+                with patch.object(self.engineer, 'compute_composite_projection', return_value=projection):
+                    response = self.client.post('/predict', json={
+                        'player': 'Test Player', 'opponent': 'BOS',
+                        'date': app_module.eastern_today(), 'home_game': False,
+                        'line': 3.5, 'over_odds': 100})
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertFalse(payload['prediction_eligible'])
+                self.assertFalse(payload['metadata']['prediction_eligible'])
+                self.assertFalse(payload['data_freshness']['prediction_eligible'])
+                self.assertFalse(payload['analysis']['actionable'])
+                self.assertIn('upstream restriction', payload['limitations'])
+
+    def test_malformed_safety_context_returns_analysis_only_instead_of_crashing(self):
+        for field in ('metadata', 'data_freshness'):
+            for value in ('bad', [], 1):
+                with self.subTest(field=field, value=value):
+                    projection = self.engineer.compute_composite_projection()
+                    projection[field] = value
+                    with patch.object(self.engineer, 'compute_composite_projection', return_value=projection):
+                        response = self.client.post('/predict', json={
+                            'player': 'Test Player', 'opponent': 'BOS',
+                            'date': app_module.eastern_today(), 'home_game': False,
+                            'line': 3.5, 'over_odds': 100})
+                    self.assertEqual(response.status_code, 200)
+                    payload = response.get_json()
+                    self.assertFalse(payload['prediction_eligible'])
+                    self.assertFalse(payload['analysis']['actionable'])
+                    self.assertFalse(payload['data_freshness']['prediction_eligible'])
+                    self.assertTrue(payload['limitations'])
+
     def test_corrupt_upstream_projection_is_sanitized_server_error(self):
         projection = self.engineer.compute_composite_projection()
         projection["projection"] = "upstream-corrupt-value"
@@ -543,7 +584,7 @@ class PredictContractTests(AppTestCase):
         request_json = {
             "player": "Test Player",
             "opponent": "BOS",
-            "date": date.today().isoformat(),
+            "date": app_module.eastern_today(),
             "line": 3.5,
             "over_odds": 100,
             "home_game": False,
@@ -676,7 +717,20 @@ class RouteContractTests(AppTestCase):
         with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
             response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.get_json()['code'], 'nba_data_unavailable')
+        self.assertEqual(response.get_json()['code'], 'rosters_unavailable')
+        self.assertIn('No player projections were attempted', response.get_json()['error'])
+        self.assertEqual(response.headers['Retry-After'], '30')
+
+    def test_exhausted_budget_is_not_reported_as_a_generic_source_outage(self):
+        def project(*args, **kwargs):
+            kwargs['diagnostics'].update(status='all_failed', all_failed=True,
+                                         budget_exhausted=True, source_error_count=1)
+            return []
+        with patch.object(app_module, 'project_team', side_effect=project), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
+            response = self.client.get('/cheat-sheet?team=BOS&date=2026-10-20')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['code'], 'projection_timeout')
+        self.assertIn('No picks were generated', response.get_json()['error'])
 
     def test_nba_data_failure_has_specific_error_and_retry_hint(self):
         with patch.object(app_module, 'project_team', side_effect=app_module.DataUnavailableError('private details')), patch.dict(os.environ, {'ODDS_API_KEY': ''}):
@@ -736,6 +790,30 @@ class RouteContractTests(AppTestCase):
 
     def test_missing_provider_timestamp_is_not_replaced_with_download_time(self):
         self._assert_quote_is_diagnostic(None)
+
+    def test_download_only_quotes_stay_stale_through_real_projection_pipeline(self):
+        fetched = datetime.now(timezone.utc).isoformat()
+        odds = {
+            'test player': {
+                'under': {'line': 8.5, 'odds': 110, 'fetched_at': fetched},
+                'fetched_at': fetched,
+            },
+            '_meta': {'source': 'the-odds-api', 'fetched_at': fetched},
+        }
+        with patch.dict(os.environ, {'ODDS_API_KEY': 'test-key'}), \
+                patch.object(self.loader, 'get_odds_for_game', return_value=odds), \
+                patch.object(self.loader, 'get_team_roster', create=True,
+                             return_value=pd.DataFrame([{'PLAYER_ID': 1, 'PLAYER': 'Test Player'}])):
+            response = self.client.get(f'/cheat-sheet?team=DAL&date={app_module.eastern_today()}')
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertEqual(len(payload['projections']), 2)
+        self.assertEqual(payload['odds']['stale_quote_count'], 2)
+        for row in payload['projections']:
+            self.assertIsNone(row['odds_updated_at'])
+            self.assertFalse(row['odds_fresh'])
+            self.assertFalse(row['actionable'])
+            self.assertEqual(row['tier'], 'STALE_ODDS')
 
     def _assert_quote_is_diagnostic(self, stale_time):
         fresh_fetch_time = datetime.now(timezone.utc).isoformat()
@@ -834,7 +912,7 @@ class RouteContractTests(AppTestCase):
 
         with patch.object(app_module, "project_team", side_effect=fail_team):
             response = self.client.get(
-                f"/cheat-sheet?team=DAL&date={date.today().isoformat()}"
+                f"/cheat-sheet?team=DAL&date={app_module.eastern_today()}"
             )
 
         self.assertEqual(response.status_code, 503)
@@ -885,7 +963,7 @@ class RouteContractTests(AppTestCase):
             self.loader, "get_games_for_date_fresh", return_value=[live_game]
         ), patch.object(app_module, "project_team", side_effect=fake_project):
             response = self.client.get(
-                f"/cheat-sheet?team=DAL&date={date.today().isoformat()}"
+                f"/cheat-sheet?team=DAL&date={app_module.eastern_today()}"
             )
 
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))

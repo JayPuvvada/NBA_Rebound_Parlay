@@ -6,6 +6,7 @@ import { ApiRequestError, fetchJson, validatePredictResponse } from "@/lib/api";
 import { easternToday } from "@/lib/format";
 import type { PredictRequest, PredictResponse } from "@/types/api";
 import { readLookupDraft, writeLookupDraft } from "@/lib/lookup-draft";
+import type { Quote } from "@/lib/dashboard";
 
 type Venue = "auto" | "home" | "away";
 
@@ -17,11 +18,11 @@ function validAmericanOdds(value: number | null): boolean {
   return value === null || (Number.isFinite(value) && Number.isInteger(value) && (value <= -100 || value >= 100));
 }
 
-export function PredictForm() {
+export function PredictForm({ initialPlayer, initialDate, initialQuote, initialOpponent }: { initialPlayer?: string; initialDate?: string; initialQuote?: Quote; initialOpponent?: string } = {}) {
   const [draft] = useState(readLookupDraft);
-  const [player, setPlayer] = useState(draft.player || "");
-  const [opponent, setOpponent] = useState(draft.opponent || "");
-  const [date, setDate] = useState(draft.date || easternToday());
+  const [player, setPlayer] = useState(initialPlayer || draft.player || "");
+  const [opponent, setOpponent] = useState(initialOpponent || draft.opponent || "");
+  const [date, setDate] = useState(initialDate || draft.date || easternToday());
   const [spread, setSpread] = useState(draft.spread || "");
   const [line, setLine] = useState(draft.line || "");
   const [overOdds, setOverOdds] = useState(draft.overOdds || "");
@@ -36,6 +37,21 @@ export function PredictForm() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PredictResponse | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (initialPlayer === undefined && initialDate === undefined) return;
+    activeRequest.current?.abort(); activeRequest.current = null;
+    setLoading(false); setResult(null); setError(null);
+    if (initialPlayer !== undefined) setPlayer(initialPlayer);
+    if (initialDate !== undefined) setDate(initialDate);
+    if (initialOpponent !== undefined) setOpponent(initialOpponent);
+    if (initialQuote) {
+      setLine(initialQuote.line == null ? "" : String(initialQuote.line));
+      setOverOdds(initialQuote.selection === "OVER" ? String(initialQuote.odds) : "");
+      setUnderOdds(initialQuote.selection === "UNDER" ? String(initialQuote.odds) : "");
+      setBookmaker(initialQuote.book);
+    }
+  }, [initialPlayer, initialDate, initialQuote, initialOpponent]);
 
   useEffect(() => () => {
     activeRequest.current?.abort();
@@ -135,9 +151,8 @@ export function PredictForm() {
     <div className="space-y-6">
       <Card className="w-full border-zinc-800 bg-zinc-950 text-zinc-100 shadow-2xl">
         <CardHeader className="border-b border-zinc-800 pb-5">
-          <CardTitle className="flex items-center gap-2 text-xl font-bold">🏀 Player Lookup</CardTitle>
-          <p className="mt-1 text-sm text-zinc-400">Check one player's rebounds. Enter your sportsbook's line and odds to compare both sides, or leave them blank for a projection only.</p>
-          <p className="text-xs text-zinc-500">Inputs stay in this browser tab when you switch pages or refresh. They are not saved picks.</p>
+          <CardTitle className="flex items-center gap-2 text-xl font-bold">Manual model inputs</CardTitle>
+          <p className="mt-2 text-sm text-zinc-400">Calculate with the regular-season model. Enter a line or leave it blank for a projection only.</p>
         </CardHeader>
         <CardContent className="pt-5">
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -158,19 +173,19 @@ export function PredictForm() {
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="lookup-spread" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Player team spread (optional)</label>
-                <input id="lookup-spread" type="number" value={spread} onChange={(event) => setSpread(event.target.value)} placeholder="-5.5" min="-40" max="40" step="0.5" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                <p className="mt-1 text-xs text-zinc-500">Negative = favored. Blank uses an even spread.</p>
-              </div>
+            <div>
               <div>
                 <label htmlFor="lookup-line" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Rebound line</label>
                 <input id="lookup-line" type="number" value={line} onChange={(event) => setLine(event.target.value)} placeholder="10.5" min="0" max="40" step="0.5" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
               </div>
             </div>
 
-            <fieldset>
+            <details className="nba-details"><summary>Advanced inputs</summary>
+            <div className="mt-3">
+              <label htmlFor="lookup-spread" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Player team spread</label>
+              <input id="lookup-spread" type="number" value={spread} onChange={event => setSpread(event.target.value)} placeholder="Optional" min="-40" max="40" step="0.5" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm" />
+            </div>
+            <fieldset className="mt-3">
               <legend className="mb-1 text-xs uppercase tracking-wider text-zinc-500">American odds by side (optional)</legend>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
@@ -186,7 +201,7 @@ export function PredictForm() {
             </fieldset>
 
             <details className="rounded-lg border border-zinc-800 p-3">
-              <summary className="cursor-pointer text-sm font-medium text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Optional sportsbook label and matchup</summary>
+              <summary className="cursor-pointer text-sm font-medium text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Sportsbook label and matchup</summary>
             <div className="mt-3">
               <label htmlFor="lookup-bookmaker" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Sportsbook / price source (optional)</label>
               <input id="lookup-bookmaker" type="text" value={bookmaker} onChange={(event) => setBookmaker(event.target.value)} maxLength={50} placeholder="e.g. FanDuel" autoComplete="off" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
@@ -210,9 +225,7 @@ export function PredictForm() {
               </div>
               {venue === "auto" && <p className="mt-1.5 text-xs text-zinc-600">If the schedule cannot verify this exact opponent and date, choose Home or Away explicitly.</p>}
             </fieldset>
-
-
-
+            </details>
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="submit" disabled={loading} className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 py-3 font-bold text-white transition-colors duration-200 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">
                 {loading ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Calculating…</> : "Check rebound prop"}

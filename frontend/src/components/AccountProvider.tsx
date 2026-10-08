@@ -16,6 +16,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   return <PersonalContext.Provider value={{ ...view, login: account.login, logout: account.logout,
     signup: publicSignupEnabled ? account.signup : undefined,
     save: account.save, remove: id => { void account.remove(id); },
+    notes: (id, notes) => { void account.notes(id, notes); },
     grade: (id, result) => { void account.grade(id, result); }, refresh: () => { void account.refresh(); },
   }}>{children}</PersonalContext.Provider>;
 }

@@ -1,11 +1,12 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    color-scheme: dark;
+    --background: 220 24% 7%;
+    --foreground: 220 14% 96%;
 
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
@@ -67,6 +68,142 @@
   }
 }
 
+/* Shared dashboard tokens. Legacy research panels remain usable during migration. */
+.nba-app { min-height: 100vh; background: #0e1117; color: #f3f4f6; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.55; }
+.nba-app * { box-sizing: border-box; }
+.nba-app [hidden] { display: none !important; }
+.nba-app h1, .nba-app h2, .nba-app h3, .nba-app p { margin: 0; }
+.nba-app h1 { font-size: clamp(27px, 3vw, 32px); font-weight: 650; letter-spacing: -.035em; }
+.nba-app h2 { font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+.nba-app h3 { font-size: 18px; font-weight: 600; }
+.nba-app button, .nba-app input, .nba-app select, .nba-app textarea { font: inherit; }
+.nba-app button { cursor: pointer; min-height: 44px; }
+.nba-app button:disabled { opacity: .5; cursor: not-allowed; }
+.nba-app :focus-visible { outline: 2px solid #72dfc1; outline-offset: 4px; }
+.nba-header { border-bottom: 1px solid #2b3443; background: #10141c; }
+.nba-header-inner { max-width: 1280px; padding: 0 24px; height: 68px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
+.nba-brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 650; color: #f3f4f6; text-decoration: none; }
+.nba-brand-mark { display: grid; place-items: center; width: 31px; height: 31px; background: #72dfc1; color: #101d19; border-radius: 8px; font-size: 20px; font-weight: 750; }
+.nba-account-button { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 8px; border: 1px solid #2b3443; color: #a5aebc; background: #151a22; min-height: 44px; }
+.nba-container { max-width: 1280px; margin: auto; padding: 0 24px; }
+.nba-nav { display: flex; gap: 22px; border-bottom: 1px solid #2b3443; margin-bottom: 30px; }
+.nba-nav > button { display: flex; align-items: center; gap: 8px; border: 0; border-bottom: 2px solid transparent; padding: 18px 0 15px; color: #a5aebc; background: transparent; font-weight: 550; white-space: nowrap; min-height: 52px; }
+.nba-nav > button.selected { color: #72dfc1; border-bottom-color: #72dfc1; }
+.nav-count { font-size: 10px; color: #a5aebc; background: #1b2230; border-radius: 10px; padding: 1px 6px; }
+.nba-page { display: grid; gap: 28px; }
+.nba-page-heading { display: flex; gap: 20px; align-items: center; justify-content: space-between; }
+.nba-page-heading .nba-muted { margin-top: 5px; }
+.nba-eyebrow { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: #72dfc1; margin-bottom: 6px !important; }
+.nba-muted { color: #a5aebc; }
+.nba-meta { color: #a5aebc; font-size: 12px; }
+.nba-card { border: 1px solid #2b3443; background: #151a22; border-radius: 12px; padding: 22px; min-width: 0; }
+.nba-card-top, .nba-section-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.nba-card-top { margin-bottom: 15px; }
+.nba-section-heading { margin-bottom: 14px; }
+.nba-section-heading .nba-meta { margin-top: 4px; }
+.nba-control-row, .research-controls { display: flex; gap: 16px; align-items: end; flex-wrap: wrap; }
+.nba-app label { display: grid; gap: 7px; color: #a5aebc; font-size: 12px; }
+.nba-app input, .nba-app select, .nba-app textarea { color: #f3f4f6; background: #0e1117; border: 1px solid #2b3443; border-radius: 7px; padding: 10px 12px; min-height: 44px; width: 100%; }
+.nba-app input::placeholder { color: #8b95a5; }
+.nba-control-row > label { min-width: 170px; }
+.research-controls > label:first-child { flex: 2; min-width: 200px; }
+.research-controls > label { flex: 1; min-width: 130px; }
+.nba-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid #72dfc1; color: #10231d; background: #72dfc1; border-radius: 8px; min-height: 44px; padding: 10px 15px; font-weight: 600; white-space: nowrap; }
+.nba-button:hover:not(:disabled) { background: #91e9d0; }
+.nba-button.secondary { background: #1b2230; color: #f3f4f6; border-color: #354052; font-weight: 500; }
+.nba-button.secondary:hover:not(:disabled) { background: #252e3d; }
+.generate-button { margin-left: auto; }
+.nba-icon-button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; background: transparent; color: #a5aebc; flex-shrink: 0; }
+.nba-text-button { color: #72dfc1; border: 0; background: transparent; text-decoration: underline; min-height: 44px; }
+.game-rail { display: flex; gap: 10px; overflow-x: auto; padding: 18px 0 2px; }
+.game-chip { flex-shrink: 0; display: grid; gap: 4px; text-align: left; background: #0e1117; border: 1px solid #2b3443; border-radius: 9px; color: #f3f4f6; padding: 12px 18px; min-height: 70px; }
+.game-chip span, .game-chip small { color: #a5aebc; }
+.game-chip.selected { border-color: #72dfc1; background: #112721; }
+.game-chip.selected strong { color: #72dfc1; }
+.nba-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.nba-badge { font-size: 11px; color: #72dfc1; background: #143027; border-radius: 5px; padding: 4px 8px; }
+.nba-badge.amber { color: #f2c46d; background: #302617; }
+.pick-candidate { border-top: 2px solid #72dfc1; }
+.pick-selection { font-size: 24px; font-weight: 650; letter-spacing: -.03em; margin-top: 10px !important; font-variant-numeric: tabular-nums; }
+.pick-selection span { color: #72dfc1; font-size: 20px; margin-left: 8px; }
+.nba-metrics { display: grid; grid-template-columns: 1fr 1fr; margin: 18px 0; gap: 20px; }
+.nba-metrics dt { font-size: 12px; color: #a5aebc; }
+.nba-metrics dd { margin: 3px 0 0; font-size: 25px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.nba-risk { color: #c1c8d1; font-size: 12px; border-left: 2px solid #f2c46d; padding-left: 10px; margin-bottom: 16px !important; }
+.nba-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.nba-details { margin-top: 18px; font-size: 12px; color: #a5aebc; }
+.nba-details summary { cursor: pointer; min-height: 44px; font-weight: 550; color: #c4cbd5; }
+.nba-details p { margin: 8px 0; overflow-wrap: anywhere; }
+.nba-inline-input { display: flex; align-items: end; gap: 12px; }
+.nba-inline-input label { flex: 1; }
+.nba-state { display: grid; justify-items: start; gap: 10px; padding: 25px; border: 1px dashed #354052; border-radius: 10px; color: #a5aebc; margin-bottom: 14px; }
+.nba-notice { border: 1px solid #544424; background: #242018; color: #f2c46d; padding: 12px 15px; border-radius: 8px; margin: 14px 0 !important; }
+.nba-error { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; border: 1px solid #62404a; background: #291b21; color: #fb9baa; padding: 14px 16px; border-radius: 8px; margin: 12px 0 !important; }
+.market-tabs { display: flex; gap: 4px; padding: 5px; background: #151a22; border-radius: 9px; border: 1px solid #2b3443; width: fit-content; max-width: 100%; }
+.market-tabs button { border: 0; background: transparent; color: #a5aebc; min-height: 44px; padding: 10px 18px; border-radius: 6px; }
+.market-tabs button.selected { background: #28333f; color: #f3f4f6; }
+.nba-filter-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 15px 0; }
+.nba-search { position: relative; flex: 1; min-width: 180px; max-width: 380px; }
+.nba-search svg { position: absolute; top: 14px; left: 12px; }
+.nba-search input { padding-left: 38px; }
+.nba-filter-row > select { width: auto; }
+.quote-value { display: flex; justify-content: space-between; gap: 10px; font-size: 20px; margin: 13px 0; font-variant-numeric: tabular-nums; }
+.quote-value strong { color: #72dfc1; }
+.nba-positive { color: #72dfc1; font-size: 12px; margin: 5px 0 !important; }
+.source-details { padding: 12px 0; }
+.research-quote { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+.nba-window-metrics { display: flex; gap: 12px; flex-wrap: wrap; }
+.nba-window-metrics > div { display: grid; gap: 4px; padding: 10px 13px; border-radius: 7px; background: #0e1117; flex: 1; min-width: 140px; }
+.nba-window-metrics span { color: #a5aebc; font-size: 11px; }
+.nba-window-metrics strong { font-size: 12px; font-variant-numeric: tabular-nums; }
+.nba-history-chart { margin: 20px 0 12px; }
+.nba-bars { display: flex; gap: 7px; align-items: end; min-height: 115px; }
+.nba-bars > div { display: flex; flex: 1; flex-direction: column; align-items: center; gap: 3px; min-width: 0; }
+.nba-bars i { width: 100%; max-width: 24px; background: #72dfc1; opacity: .8; border-radius: 3px 3px 0 0; }
+.nba-bars span { font-size: 10px; color: #c1c8d1; }
+.nba-bars small { color: #a5aebc; font-size: 9px; }
+.nba-history-chart figcaption { color: #a5aebc; font-size: 10px; margin-top: 8px; }
+.nba-history-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+.nba-history-table caption { text-align: left; color: #a5aebc; font-size: 11px; margin-bottom: 8px; }
+.nba-history-table th, .nba-history-table td { padding: 9px 4px; text-align: right; border-bottom: 1px solid #2b3443; }
+.nba-history-table th:first-child, .nba-history-table td:first-child { text-align: left; }
+.nba-history-table th { color: #a5aebc; font-weight: 500; }
+.manual-model { margin: 0; }
+.nba-toast { display: flex; align-items: center; gap: 10px; border: 1px solid #3e695b; background: #163027; color: #cdeee3; border-radius: 8px; padding: 4px 8px 4px 14px; margin-bottom: 20px; }
+.nba-toast span { flex: 1; }
+.pending-selection { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
+.pending-selection > div { flex: 1; min-width: 180px; }
+.nba-footer { color: #a5aebc; font-size: 11px; border-top: 1px solid #2b3443; padding: 22px 0 32px; margin-top: 40px; }
+.nba-skip-link { position: fixed; top: -80px; left: 16px; padding: 10px 16px; background: #72dfc1; color: #10231d; z-index: 100; border-radius: 6px; }
+.nba-skip-link:focus { top: 12px; }
+@media (max-width: 700px) {
+  .game-rail { flex-wrap: wrap; overflow-x: visible; }
+  .game-chip { flex: 1 1 140px; min-width: 0; padding: 12px; }
+  .nba-header-inner { height: 56px; padding: 0 16px; }
+  .nba-container { padding: 0 16px; }
+  .nba-nav { gap: 17px; margin-bottom: 22px; }
+  .nba-nav > button { font-size: 12px; padding: 14px 0 12px; }
+  .nba-brand { font-size: 16px; }
+  .nba-brand-mark { width: 27px; height: 27px; font-size: 17px; }
+  .nba-page { gap: 22px; }
+  .nba-card { padding: 17px; }
+  .nba-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .nba-control-row { gap: 12px; }
+  .nba-control-row > label { flex: 1; min-width: 120px; }
+  .generate-button { width: 100%; }
+  .nba-page-heading { align-items: start; flex-wrap: wrap; gap: 12px; }
+  .market-tabs { width: 100%; }
+  .market-tabs button { flex: 1; padding: 8px 7px; font-size: 12px; }
+  .nba-filter-row .nba-search { max-width: none; }
+  .nba-section-heading { flex-wrap: wrap; }
+  .research-quote { flex-wrap: wrap; }
+  .nba-bars { gap: 4px; }
+  .nba-bars small { font-size: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nba-app *, .nba-app *::before, .nba-app *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
 @layer base {
   * {
     border-color: hsl(var(--border));
@@ -118,3 +255,14 @@
     opacity: 0.1;
   }
 }
+ .analysis-visuals { display: grid; gap: 18px; margin-top: 16px; }
+ .analysis-visuals h4 { margin: 0 0 10px; font-weight: 600; }
+ .analysis-visuals svg { width: 100%; max-height: 100px; }
+ .analysis-bar-row { margin: 12px 0; }
+ .analysis-bar-row > div:first-child { display: flex; justify-content: space-between; gap: 8px; }
+ .analysis-bar { height: 8px; background: #2B3443; border-radius: 8px; margin-top: 6px; overflow: hidden; }
+ .analysis-bar span { display: block; height: 100%; border-radius: 8px; }
+ .analysis-scenarios { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+ .analysis-scenarios > div { display: grid; gap: 5px; padding: 10px; border: 1px solid #2B3443; border-radius: 8px; }
+ .analysis-scenarios span { text-transform: capitalize; }
+ .analysis-scenarios small { color: #A5AEBC; }

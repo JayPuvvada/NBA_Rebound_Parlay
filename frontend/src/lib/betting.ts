@@ -1,13 +1,20 @@
 import type { Direction, ProjectionBase, ProjectionMetrics } from "@/types/api";
 
+export function sideEvaluationForLine(metrics: ProjectionMetrics, side: Direction, line: number) {
+  const evaluation = metrics.side_evaluations?.[side === 'OVER' ? 'over' : 'under'];
+  // Older responses omitted the side line. They are usable only at the
+  // response's selected line, not at a different market quote.
+  const evaluatedLine = evaluation?.line === undefined ? metrics.line : evaluation.line;
+  return Number.isFinite(line) && line >= 0 && evaluation?.direction === side && evaluatedLine === line
+    ? evaluation : null;
+}
+
 /** Return estimates are valid only for the side, line and price evaluated. */
 export function sideExpectedReturn(metrics: ProjectionMetrics, side: Direction, line: number, price: number | null | undefined): number | null {
   if (!Number.isFinite(line) || line < 0 || typeof price !== 'number'
     || !Number.isInteger(price) || Math.abs(price) < 100) return null;
-  const evaluation = metrics.side_evaluations?.[side === 'OVER' ? 'over' : 'under'];
-  // Side evaluations are paired with their corresponding market quote by the
-  // API, including when the Over and Under have different lines.
-  if (evaluation?.direction === side && evaluation.american_odds === price
+  const evaluation = sideEvaluationForLine(metrics, side, line);
+  if (evaluation && evaluation.american_odds === price
     && typeof evaluation.ev_roi === 'number' && Number.isFinite(evaluation.ev_roi)) {
     return evaluation.ev_roi;
   }

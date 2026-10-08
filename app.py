@@ -22,8 +22,13 @@ from src.recommendation import (
     select_best_bet,
     tier_from_signals,
     weighted_hit_rate,
+    normalize_prop_odds,
 )
 from src.cheat_sheet import project_team
+from src.projection_safety import projection_eligibility
+from src.preseason_analysis import player_analysis
+from src.markets import fetch_board, BOOKS, SPORTS
+from src.pick_generator import generate_picks, player_histories
 from src.utils import get_logger, eastern_today, current_season
 
 load_dotenv()
@@ -50,6 +55,12 @@ CORS(
         r"/predict": {"origins": cors_origins},
         r"/games": {"origins": cors_origins},
         r"/cheat-sheet": {"origins": cors_origins},
+        r"/preseason-roster": {"origins": cors_origins},
+        r"/preseason-player": {"origins": cors_origins},
+        r"/preseason-markets": {"origins": cors_origins},
+        r"/markets": {"origins": cors_origins},
+        r"/player-history": {"origins": cors_origins},
+        r"/generate-picks": {"origins": cors_origins},
     },
 )
 
@@ -155,9 +166,15 @@ def _env_nonnegative_int(name, default):
 _request_windows = defaultdict(deque)
 _request_windows_lock = threading.Lock()
 _rate_limits = {
+    "/generate-picks": (_env_nonnegative_int("GENERATE_RATE_LIMIT", 8), 60),
+    "/markets": (_env_nonnegative_int("MARKETS_RATE_LIMIT", 20), 60),
+    "/player-history": (_env_nonnegative_int("HISTORY_RATE_LIMIT", 20), 60),
     "/predict": (_env_nonnegative_int("PREDICT_RATE_LIMIT", 20), 60),
     "/games": (_env_nonnegative_int("GAMES_RATE_LIMIT", 60), 60),
     "/cheat-sheet": (_env_nonnegative_int("CHEAT_SHEET_RATE_LIMIT", 8), 60),
+    "/preseason-roster": (_env_nonnegative_int("PRESEASON_ROSTER_RATE_LIMIT", 12), 60),
+    "/preseason-player": (_env_nonnegative_int("PRESEASON_PLAYER_RATE_LIMIT", 20), 60),
+    "/preseason-markets": (_env_nonnegative_int("PRESEASON_MARKETS_RATE_LIMIT", 8), 60),
 }
 
 
@@ -451,7 +468,7 @@ def _projection_error_status(message):
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path == "predict":
+    if path in {"predict", "generate-picks"}:
         response = jsonify({"error": "Method not allowed.", "code": "method_not_allowed"})
         response.status_code = 405
         response.headers["Allow"] = "POST"
@@ -479,6 +496,246 @@ def health():
         "season": loader.season,
         "timestamp": _utc_now(),
     })
+
+
+def _preseason_game(date_loader, team, date_str):
+    from nba_api.stats.static import teams
+    team_map = {item['id']: item['abbreviation'] for item in teams.get_teams()}
+    team_id = next((key for key, abbr in team_map.items() if abbr == team), None)
+    if team_id is None:
+        raise APIValidationError('Unknown NBA team')
+    games = date_loader.get_games_for_date(date_str)
+    game = next((item for item in games if team_id in (item['home_id'], item['away_id'])), None)
+    if not game or game.get('is_preseason') is not True:
+        raise APIValidationError('Select a verified preseason game for this analysis')
+    return game, team_map
+
+
+@app.route('/preseason-roster')
+def preseason_roster():
+    date_loader = None
+    try:
+        date_str, parsed_date = _parse_date(request.args.get('date'), default=eastern_today())
+        team = str(request.args.get('team') or '').strip().upper()
+        date_loader, _ = _components_for_date(parsed_date)
+        date_loader.set_request_budget(35)
+        game, team_map = _preseason_game(date_loader, team, date_str)
+        rosters = []
+        for team_id in (game['home_id'], game['away_id']):
+            try:
+                roster = date_loader.get_analysis_roster(team_id)
+            except (RequestException, DataUnavailableError):
+                roster = {'players': [], 'source': 'unavailable', 'unmatched_count': 0,
+                          'limitations': ['Roster unavailable; retry when the data source recovers.'],
+                          'error': 'This team roster could not be loaded.'}
+            rosters.append({**roster, 'team': team_map[team_id]})
+        return jsonify({'date': date_str, 'season': date_loader.season, 'analysis_only': True,
+                        'game': {'home': team_map[game['home_id']], 'away': team_map[game['away_id']]},
+                        'teams': rosters})
+    except (APIValidationError, ValueError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except (RequestException, DataUnavailableError):
+        return jsonify({'error': 'The preseason schedule could not be verified. Try again later.',
+                        'code': 'preseason_schedule_unavailable'}), 503
+    except Exception:
+        log.exception('Preseason roster analysis failed')
+        return jsonify({'error': 'Preseason rosters could not be loaded.', 'code': 'preseason_unavailable'}), 503
+    finally:
+        if date_loader is not None:
+            date_loader.set_request_budget(None)
+
+
+@app.route('/markets')
+def markets_board():
+    date_loader = None
+    try:
+        date, parsed = _parse_date(request.args.get('date'), default=eastern_today())
+        home = str(request.args.get('home', '')).strip().upper()
+        away = str(request.args.get('away', '')).strip().upper()
+        sport = request.args.get('sport', 'basketball_nba')
+        books = tuple(sorted(set(request.args.get('books', ','.join(BOOKS)).split(','))))
+        group = request.args.get('group', 'rebounds')
+        if group not in {'game', 'rebounds'}:
+            raise APIValidationError('Unsupported market group')
+        raw_refresh = request.args.get('refresh', 'false')
+        if raw_refresh not in {'true', 'false'}:
+            raise APIValidationError('refresh must be true or false')
+        if sport not in SPORTS or not books or any(book not in BOOKS for book in books):
+            raise APIValidationError('Unsupported sportsbook or NBA league')
+        date_loader, _ = _components_for_date(parsed)
+        date_loader.set_request_budget(25)
+        return jsonify(fetch_board(date_loader, os.environ.get('ODDS_API_KEY', ''), home, away, date, sport, books,
+                                   group=group, refresh=raw_refresh == 'true'))
+    except (ValueError, APIValidationError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except Exception:
+        return jsonify({'error': 'Sportsbook provider unavailable. Research and saved picks remain separate.', 'code': 'markets_unavailable'}), 503
+    finally:
+        if date_loader is not None:
+            date_loader.set_request_budget(None)
+
+
+@app.route('/generate-picks', methods=['POST'])
+def generated_rebound_assessments():
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise APIValidationError('Expected a JSON object')
+        home = _required_text(data, 'home', 3).upper()
+        away = _required_text(data, 'away', 3).upper()
+        from nba_api.stats.static import teams
+        abbreviations = {team['abbreviation'] for team in teams.get_teams()}
+        if home == away or home not in abbreviations or away not in abbreviations:
+            raise APIValidationError('Choose two different NBA teams')
+        date, _ = _parse_date(data.get('date'), default=eastern_today())
+        sport, book = data.get('sport', 'basketball_nba'), data.get('book', 'fanduel')
+        if sport not in SPORTS or book not in BOOKS:
+            raise APIValidationError('Unsupported sportsbook or NBA league')
+        raw_minutes = data.get('minutes', {})
+        if not isinstance(raw_minutes, dict) or len(raw_minutes) > 40:
+            raise APIValidationError('minutes must map player IDs or names to minutes')
+        minutes = {}
+        for player, value in raw_minutes.items():
+            if not isinstance(player, str) or not player.strip() or len(player) > 100:
+                raise APIValidationError('Invalid minutes player identifier')
+            minutes[player] = _optional_float(value, 'minutes', minimum=0, maximum=48)
+            if minutes[player] is None:
+                raise APIValidationError('minutes must be numeric')
+        players = data.get('players', [])
+        if (not isinstance(players, list) or len(players) > 40
+                or any(not isinstance(name, str) or not name.strip() or len(name) > 100 for name in players)):
+            raise APIValidationError('players must be a list of player names')
+        return jsonify(generate_picks({'home': home, 'away': away, 'date': date, 'sport': sport,
+                                       'book': book, 'minutes': minutes, 'players': players},
+                                      os.environ.get('ODDS_API_KEY', '')))
+    except (APIValidationError, ValueError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except Exception:
+        log.exception('Bounded pick generation failed')
+        return jsonify({'error': 'Generation is unavailable. Retry shortly.', 'code': 'generation_unavailable'}), 503
+
+
+@app.route('/player-history')
+def observed_player_history():
+    try:
+        date, _ = _parse_date(request.args.get('date'), default=eastern_today())
+        name = _required_text(request.args, 'player')
+        preseason = request.args.get('preseason', 'false') == 'true'
+        line = _optional_float(request.args.get('line'), 'line', minimum=0, maximum=100)
+        return jsonify(player_histories(name, date, preseason, line))
+    except (APIValidationError, ValueError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except Exception:
+        return jsonify({'error': 'Player history unavailable. Sportsbook lines remain available independently.', 'code': 'history_unavailable'}), 503
+@app.route('/preseason-markets')
+def preseason_markets():
+    date_loader = None
+    try:
+        date_str, parsed_date = _parse_date(request.args.get('date'), default=eastern_today())
+        team = str(request.args.get('team') or '').strip().upper()
+        book = str(request.args.get('book') or 'fanduel').strip().lower()
+        if book not in {'fanduel', 'draftkings', 'betmgm'}:
+            raise APIValidationError('Select a supported sportsbook')
+        date_loader, _ = _components_for_date(parsed_date)
+        date_loader.set_request_budget(25)
+        game, team_map = _preseason_game(date_loader, team, date_str)
+        home, away = team_map[game['home_id']], team_map[game['away_id']]
+        result = {'date': date_str, 'game': {'home': home, 'away': away}, 'book': book,
+                  'analysis_only': True, 'markets': [], 'status': 'unconfigured',
+                  'message': 'Sportsbook feed is not configured on this server.'}
+        key = os.environ.get('ODDS_API_KEY', '')
+        if not key:
+            return jsonify(result)
+        # Prices load independently from histories so absent props cannot
+        # prevent the user inspecting players and their real observations.
+        data = date_loader.get_odds_for_game(key, home, away, date_str, bookmaker=book,
+                                            sport_key='basketball_nba_preseason')
+        meta = data.get('_meta', {})
+        result['game_spreads'] = {
+            side: value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+            for side, value in [('home', meta.get('home_spread')), ('away', meta.get('away_spread'))]
+        }
+        for name, entry in data.items():
+            if name == '_meta' or not isinstance(name, str):
+                continue
+            quotes = normalize_prop_odds(entry)
+            sides = []
+            for side in ('over', 'under'):
+                quote = quotes[side]
+                if quote is None:
+                    continue
+                age = _odds_timestamp_age_seconds(quote.get('updated_at'))
+                sides.append({'side': side.upper(), 'line': quote['line'], 'odds': quote['odds'],
+                              'updated_at': quote.get('updated_at'),
+                              'fresh': age is not None and age <= _max_actionable_odds_age_seconds()})
+            if sides:
+                result['markets'].append({'player': name, 'quotes': sides})
+        result.update(status='available' if result['markets'] else 'empty',
+                      message=('Sportsbook prices only; preseason probabilities and betting edges are not issued.'
+                               if result['markets'] else
+                               ('The feed found this game and its spread, but returned no player rebound props for this sportsbook.'
+                                if result['game_spreads']['home'] is not None else
+                                'The feed returned no rebound props for this game and sportsbook. They may not be offered yet.')))
+        return jsonify(result)
+    except (APIValidationError, ValueError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except (RequestException, DataUnavailableError):
+        return jsonify({'error': 'Sportsbook prices could not be loaded. Player history can still be viewed.',
+                        'code': 'preseason_markets_unavailable'}), 503
+    except Exception:
+        log.exception('Preseason markets failed')
+        return jsonify({'error': 'Sportsbook prices are temporarily unavailable. Player history can still be viewed.',
+                        'code': 'preseason_markets_unavailable'}), 503
+    finally:
+        if date_loader is not None:
+            date_loader.set_request_budget(None)
+
+
+@app.route('/preseason-player', methods=['POST'])
+def preseason_player():
+    date_loader = None
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise APIValidationError('Expected a JSON object')
+        date_str, parsed_date = _parse_date(data.get('date'), default=eastern_today())
+        team = _required_text(data, 'team', 3).upper()
+        opponent = _required_text(data, 'opponent', 3).upper()
+        player_id = data.get('player_id')
+        if isinstance(player_id, bool) or not isinstance(player_id, int) or not 0 < player_id <= 2**53:
+            raise APIValidationError('player_id must be a positive integer')
+        raw_minutes = data.get('minutes')
+        if isinstance(raw_minutes, bool):
+            raise APIValidationError('minutes must be a number from 0 to 48')
+        minutes = _optional_float(raw_minutes, 'minutes', minimum=0, maximum=48)
+        date_loader, _ = _components_for_date(parsed_date)
+        date_loader.set_request_budget(25)
+        game, team_map = _preseason_game(date_loader, team, date_str)
+        if {team_map[game['home_id']], team_map[game['away_id']]} != {team, opponent} or team == opponent:
+            raise APIValidationError('Opponent does not match the selected preseason game')
+        team_id = next(key for key, abbreviation in team_map.items() if abbreviation == team)
+        roster = date_loader.get_analysis_roster(team_id)
+        player = next((item for item in roster['players'] if item['player_id'] == player_id), None)
+        if player is None:
+            raise APIValidationError('Player is not in the retrieved team roster')
+        prior_year = int(date_loader.season[:4]) - 1
+        prior_loader, _ = _components_for_date(_date(prior_year, 10, 1))
+        result = player_analysis(player_id, date_loader, prior_loader, date_str, minutes)
+        result['limitations'] = list(dict.fromkeys(roster['limitations'] + result['limitations']))
+        return jsonify({**result, 'player_id': player_id, 'player': player['name'],
+                        'team': team, 'opponent': opponent, 'date': date_str, 'season': date_loader.season})
+    except (APIValidationError, ValueError) as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_request'}), 400
+    except (RequestException, DataUnavailableError):
+        return jsonify({'error': 'The preseason matchup or player roster could not be verified. Retry later.',
+                        'code': 'preseason_player_unavailable'}), 503
+    except Exception:
+        log.exception('Preseason player analysis failed')
+        return jsonify({'error': 'Preseason player analysis is temporarily unavailable.',
+                        'code': 'preseason_unavailable'}), 503
+    finally:
+        if date_loader is not None:
+            date_loader.set_request_budget(None)
 
 
 @app.route('/predict', methods=['POST'])
@@ -623,14 +880,9 @@ def predict():
             return jsonify({'error': message, 'code': 'projection_unavailable'}), status
 
         mean_proj = float(proj_data['projection'])
-        projection_metadata = dict(proj_data.get('metadata') or {})
-        eligibility_signal = projection_metadata.get('prediction_eligible')
-        prediction_eligible = eligibility_signal is True
-        limitations = list(projection_metadata.get('limitations') or [])
-        if eligibility_signal is not True and eligibility_signal is not False:
-            limitations.append(
-                'projection safety metadata did not explicitly authorize a live pick'
-            )
+        raw_metadata = proj_data.get('metadata')
+        projection_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        prediction_eligible, limitations = projection_eligibility(proj_data)
         schedule_status = scheduled_game.get('status') if scheduled_game else None
         schedule_is_pregame = _is_pregame(scheduled_game)
         if scheduled_game is None:
@@ -654,7 +906,8 @@ def predict():
         })
         limitations = projection_metadata['limitations']
 
-        data_freshness = dict(proj_data.get('data_freshness') or {})
+        raw_freshness = proj_data.get('data_freshness')
+        data_freshness = dict(raw_freshness) if isinstance(raw_freshness, dict) else {}
         data_freshness.update({
             'prediction_eligible': prediction_eligible,
             'limitations': list(limitations),
@@ -1032,6 +1285,7 @@ def get_games():
                 'status': g.get('status'),
                 'status_text': g.get('status_text'),
                 'game_time': g.get('game_time'),
+                'start_time': g.get('start_time'),
                 'is_preseason': bool(g.get('is_preseason')),
             }
             for g in raw_games
@@ -1104,6 +1358,7 @@ def cheat_sheet():
                     away_abbr,
                     date_str,
                     bookmaker=book,
+                    sport_key=('basketball_nba_preseason' if selected_game.get('is_preseason') else 'basketball_nba'),
                 )
             except Exception as exc:
                 odds_error = 'Live sportsbook prices are temporarily unavailable.'
@@ -1158,6 +1413,24 @@ def cheat_sheet():
             diagnostic.get('all_failed') or diagnostic.get('empty_roster')
             for diagnostic in team_diagnostics
         ):
+            if any(diagnostic.get('budget_exhausted') for diagnostic in team_diagnostics):
+                return jsonify({
+                    'error': 'Player-data loading reached its time limit before any projections completed. No picks were generated. Try again later or use a historical Player Lookup.',
+                    'code': 'projection_timeout',
+                }), 503
+            if all(diagnostic.get('status') == 'roster_unavailable' for diagnostic in team_diagnostics):
+                message = (
+                    f'The schedule loaded, but team rosters for {away_abbr} and {home_abbr} '
+                    'could not be retrieved from NBA Stats. No player projections were attempted. '
+                    'Retrying may help if the connection recovers.'
+                )
+                if selected_game.get('is_preseason'):
+                    message += (' Separately, preseason forecasts are not supported by the current '
+                                'model; it requires regular-season history for the selected season.')
+                response = jsonify({'error': message, 'code': 'rosters_unavailable'})
+                response.status_code = 503
+                response.headers['Retry-After'] = '30'
+                return response
             if any(diagnostic.get('source_error_count', 0) for diagnostic in team_diagnostics):
                 raise DataUnavailableError('Player history sources failed for the selected game')
             return jsonify({

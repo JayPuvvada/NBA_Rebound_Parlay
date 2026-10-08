@@ -3,6 +3,32 @@
 This is a progress record, not a claim that all issues are fixed. Nothing in
 this work authorizes or performs a Render/Vercel deployment.
 
+## Current dashboard acceptance — October 7, 2026
+
+The connected Picks & Lines, Player Research and My Picks implementation supersedes
+the older UI described below. Current evidence: 372 backend tests, 101 frontend tests,
+30 desktop/mobile checks, lint, TypeScript and production build pass. Dependency
+audit reports zero vulnerabilities. Real local account persistence was verified
+separately; deterministic browser fixtures do not establish live provider coverage.
+
+The generator accepts explicit preseason minutes as research-only scenario inputs,
+with fresh provider prices and verified pregame required for an experimental
+candidate. It never promotes experimental output to the legacy actionable model.
+Research failures and partial samples expose targeted retry. Quote freshness labels
+expire locally without provider polling or extra credits.
+
+See [local release acceptance](local-release-acceptance.md) for commands and exact
+live checks. Remaining gates: actual offered rebound props/full-input live approval,
+broader predictive evaluation, consenting beta participants, and separately authorized
+hosted schema/deployment with durable shared quota storage. No local test establishes
+those external outcomes.
+
+## Historical reliability work
+
+The entries below are dated earlier evidence, including references to the previous
+Daily Edge/Player Lookup UI and work that was pending at that time. They are not the
+current dashboard acceptance checklist.
+
 ## Verified locally
 
 - NBA client default headers restored; completed-season real data retrieved.
@@ -97,6 +123,39 @@ this work authorizes or performs a Render/Vercel deployment.
   are initialized under a shared lock to prevent duplicate concurrent cold loads.
 - Frontend response guards validate nested safety flags, warnings, source/injury
   context and odds provenance, preventing malformed context from reaching the UI.
+- Side-card probabilities and expected returns are tied to the evaluated side
+  and rebound line; expected return additionally requires the same price.
+  Explicit per-side lines support different Over/Under lines. Older responses
+  without them can only reuse evaluations at the selected line, not another
+  market line. Invalid side lines/probabilities are rejected at the API boundary.
+- NBA HTTP 403/429 responses stop immediately rather than retrying in the same
+  request. Endpoint cooldown survives budget exhaustion during retry backoff;
+  a successful retry still clears it. This reduces unnecessary probes but does
+  not guarantee access to NBA Stats.
+- Historical hit-rate/sample gates exclude negative, boolean and fractional
+  rebound observations. Valid zero counts and numeric-string whole counts remain
+  supported, with the existing recency weighting and push handling unchanged.
+- Quote normalization no longer promotes download time to quote-update time.
+  A regression through the real Daily Edge projection pipeline verifies that
+  download-only quotes reach the route as stale and non-actionable. Nested sides
+  require their own price and cannot borrow a legacy Over price; invalid nested
+  quotes do not fall back to resurrecting the flat quote. Shared lines and actual
+  provider-update metadata remain supported, and boolean lines are rejected.
+- Malformed explicit variance sample counts use the existing heuristic path
+  (`heuristic_invalid_sample`) rather than receiving unknown-sample empirical
+  weighting. Missing sample counts and valid integral counts retain their
+  previous behavior; no variance parameters were recalibrated.
+- Server eligibility reconciliation preserves explicit vetoes and warnings from
+  metadata, freshness and top-level context. Degraded sources cannot be upgraded
+  by an optimistic flag. Malformed metadata/freshness now retains diagnostic
+  output instead of causing a route error or skipped player; no pick is issued.
+- Recommendation validation rejects malformed numeric signals, fractional game
+  counts and impossible win-plus-push probabilities without changing thresholds.
+- Verified 2026-10-03: 280 backend tests pass. The last frontend verification
+  passed 64 tests; lint,
+  TypeScript, production build and diff checks pass. Tests use mocked providers;
+  these tests do not establish live-provider or hosted readiness. The build
+  still warns that its Browserslist compatibility dataset is out of date.
 
 ## Still pending
 
@@ -115,7 +174,53 @@ this work authorizes or performs a Render/Vercel deployment.
 - Finish reconciling older README change-audit sections with current behavior.
 - Deploy only after explicit approval and local verification.
 
+## Preseason research implementation (2026-10-04)
+
+- Added a dedicated analysis-only roster/player flow. The UI does not send
+  preseason games into the failing regular-season full-slate calculation.
+- Current-season roster fallback uses ESPN with exact, unique NBA name-to-ID
+  mapping and visible omission/provenance warnings; no current-roster fallback
+  is allowed for older seasons. Cached fallback responses preserve provenance.
+- Histories are fetched per selected player, independently bounded, with same-day
+  cutoffs, no invented first-appearance minutes, and no picks/account writes.
+- Real GSW–LAC rosters and Curry prior-season history loaded locally. This does
+  not establish uninterrupted NBA availability, hosted readiness or model accuracy.
+- ESPN preseason fallback requires an explicit matching season/preseason group,
+  validates dates and statistics, and preserves source warnings on cached reads.
+  Ambiguous provider responses remain unavailable rather than a verified empty
+  season. A controlled NBA timeout plus live ESPN response retrieved Bam's
+  October 3 appearance (13 minutes, 6 rebounds) successfully.
+- The actual frontend fetch/validation code accepted both GSW–LAC and UTA–DEN
+  local roster/player responses. Curry and Jokic had prior history but no earlier
+  preseason appearances; manually entered 20-minute scenarios were labeled as
+  assumptions. No automatic first-appearance minutes were supplied.
+- Final local verification: 307 backend tests, 75 frontend tests, lint, TypeScript,
+  production build and diff checks passed. Frontend tests run sequentially to
+  avoid a stalled concurrent Vite module-loading test process. The compatibility
+  dataset warning remains. Hosted deployment and interactive browser testing
+  have not been performed.
+- Subsequent feed integration adds independently fetched sportsbook rebound
+  lines and five recent observed appearances. Fixed the odds league selection:
+  preseason queries use `basketball_nba_preseason` for both event discovery and
+  event odds, with caches separated from regular NBA queries. The corrected
+  FanDuel GSW–LAC query found the game and LAC +2.5 but no rebound props.
+  Available game spreads do not imply player props are offered. Timestamp-less
+  quotes remain visibly unverified. Verification: 310 backend and 77 frontend
+  tests passed, with production-build checks.
+
 ## External limitations
+
+On 2026-10-04, tracing GSW–LAC with odds requests disabled found a roster
+failure before any player was attempted: LAC timed out, and GSW encountered
+the roster endpoint cooldown. The request failed in 45.83 seconds. The API now
+distinguishes unavailable rosters and exhausted request budgets from a generic
+source failure; this does not restore NBA access or implement preseason forecasts.
+281 backend tests passed after this error-reporting change.
+
+Local schedule check on 2026-10-03 returned Miami at Toronto directly from NBA
+Stats, marked preseason and Final (game `0012600009`). A sandbox-only attempt
+first failed DNS resolution; the network-enabled check succeeded. This verifies
+schedule access, not a full live projection, fresh odds or hosted connectivity.
 
 Local schedule recheck on 2026-09-21: the stricter parser accepted 10 games
 for 2025-03-14 directly from NBA Stats in 0.37 seconds, including the provider's

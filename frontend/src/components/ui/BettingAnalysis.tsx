@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { DataFreshness } from "./DataFreshness";
 import { SavePickControl } from "./SavePickControl";
 import { formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
-import { bettingView, noBetReason, sideExpectedReturn } from "@/lib/betting";
+import { bettingView, noBetReason, sideEvaluationForLine, sideExpectedReturn } from "@/lib/betting";
 import type { CheatRange, MarketOdds, ProjectionBase, ProjectionMetrics, SimulationRange } from "@/types/api";
 
 const TrendChart = lazy(() => import("./TrendChart").then(module => ({ default: module.TrendChart })));
@@ -73,19 +73,20 @@ export function BettingAnalysis({ data, metrics: rawMetrics, range, marketOdds, 
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {(["over", "under"] as const).map(side => {
-              const evaluation = metrics.side_evaluations?.[side];
               const quote = marketOdds?.[side];
               const sideName = side === "over" ? "OVER" : "UNDER";
               const selectedSide = metrics.evaluated_side ?? metrics.odds_side ?? metrics.direction;
               const isEvaluated = selectedSide === sideName;
-              const sideLine = quote?.line ?? line;
+              const candidate = metrics.side_evaluations?.[side];
+              const sideLine = quote?.line ?? (candidate?.direction === sideName ? candidate.line : null) ?? line;
+              const evaluation = sideEvaluationForLine(metrics, sideName, sideLine);
               const price = quote?.odds ?? evaluation?.american_odds ?? (isEvaluated ? metrics.american_odds : null);
               // Different lines must keep their own probability, never reuse the selected line's value.
               const probability = evaluation?.confidence ?? (sideLine === line ? (side === "over" ? metrics.over_probability : metrics.under_probability) : null);
               const ev = sideExpectedReturn(metrics, sideName, sideLine, price);
               const showReturn = eligible && metrics.tier !== "STALE_ODDS" && price != null && ev != null;
               return (
-                <div key={side} className={"rounded-lg border p-4 " + (direction === sideName ? "border-emerald-600 bg-emerald-950/10" : "border-zinc-800 bg-zinc-900/30")}>
+                <div key={side} className={"rounded-lg border p-4 " + (direction === sideName && sideLine === line && price === metrics.american_odds ? "border-emerald-600 bg-emerald-950/10" : "border-zinc-800 bg-zinc-900/30")}>
                   <div className="flex flex-wrap justify-between gap-2">
                     <h3 className="font-semibold text-zinc-200">{sideName} {sideLine}</h3>
                     <span className="font-mono text-zinc-300">{price != null ? formatAmericanOdds(price) : "No price"}</span>

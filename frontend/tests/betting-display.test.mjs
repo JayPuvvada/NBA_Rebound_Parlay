@@ -54,6 +54,8 @@ test("public lookup hides ledger saving and token controls", () => {
   const html = renderToStaticMarkup(createElement(PredictForm));
   assert.ok(html.includes("Check rebound prop"));
   assert.ok(html.includes("Over odds"));
+  assert.ok(html.includes('Manual model inputs'));
+  assert.ok(html.includes('Advanced inputs'));
   for (const text of ["Optional performance tracking", "Save a qualifying", "lookup-ledger-token", 'type="checkbox"', 'type="password"']) {
     assert.ok(!html.includes(text), text);
   }
@@ -109,7 +111,7 @@ test("manual quote copy does not mislabel generated time as a sportsbook update"
 test("distinct side lines retain the matching side-specific probability", () => {
   const html = render({
     marketOdds: { over: { line: 10.5, odds: -110 }, under: { line: 12.5, odds: -115 } },
-    metrics: { ...metrics, side_evaluations: { ...metrics.side_evaluations, under: { direction: "UNDER", confidence: 0.7, american_odds: -115, ev_roi: 0.1 } } },
+    metrics: { ...metrics, side_evaluations: { ...metrics.side_evaluations, under: { direction: "UNDER", line: 12.5, confidence: 0.7, american_odds: -115, ev_roi: 0.1 } } },
   });
   assert.ok(html.includes("UNDER 12.5"));
   assert.ok(html.includes("70.0%"));
@@ -119,6 +121,37 @@ test("different line without matching evaluation does not borrow another line's 
   const html = render({ marketOdds: { under: { line: 12.5, odds: -115 } }, metrics: { ...metrics, side_evaluations: undefined } });
   assert.ok(html.includes("UNDER 12.5"));
   assert.ok(!html.includes("40.0%"));
+});
+
+test("an existing side evaluation cannot lend its probability or return to a different line", () => {
+  for (const evaluatedLine of [undefined, 10.5]) {
+    const html = render({
+      marketOdds: { over: { line: 12.5, odds: -110 } },
+      metrics: { ...metrics, side_evaluations: { over: { ...metrics.side_evaluations.over, line: evaluatedLine } } },
+    });
+    assert.ok(html.includes('OVER 12.5'));
+    assert.ok(!html.includes('60.0%'));
+    assert.ok(!html.includes('+14.5%'));
+  }
+});
+
+test("explicitly evaluated side line remains accurate without a market quote", () => {
+  const html = render({ metrics: { ...metrics, side_evaluations: {
+    under: { direction: 'UNDER', line: 12.5, confidence: 0.7, american_odds: -115, ev_roi: 0.1 },
+  } } });
+  assert.ok(html.includes('UNDER 12.5'));
+  assert.ok(html.includes('70.0%'));
+  assert.ok(html.includes('+10.0%'));
+});
+
+test("wrong-side evaluations cannot supply another side's probability or price", () => {
+  const html = render({ metrics: { ...metrics, side_evaluations: {
+    under: { direction: 'OVER', line: 10.5, confidence: 0.99, american_odds: 700, ev_roi: 0.9 },
+  } } });
+  assert.ok(!html.includes('99.0%'));
+  assert.ok(!html.includes('+700'));
+  assert.ok(!html.includes('+90.0%'));
+  assert.ok(html.includes('40.0%'));
 });
 
 test("different selected-side line does not borrow the original line's expected return", () => {
@@ -157,7 +190,7 @@ test("matching quotes retain selected-price and distinct-line evaluated returns"
   assert.ok(selected.includes("+14.5%"));
   const evaluated = render({
     marketOdds: { under: { line: 12.5, odds: -115 } },
-    metrics: { ...metrics, side_evaluations: { under: { direction: "UNDER", confidence: 0.7, american_odds: -115, ev_roi: 0.1 } } },
+    metrics: { ...metrics, side_evaluations: { under: { direction: "UNDER", line: 12.5, confidence: 0.7, american_odds: -115, ev_roi: 0.1 } } },
   });
   assert.ok(evaluated.includes("UNDER 12.5"));
   assert.ok(evaluated.includes("70.0%"));

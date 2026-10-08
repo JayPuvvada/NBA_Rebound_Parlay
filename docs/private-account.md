@@ -1,5 +1,30 @@
 # Supabase Free: private saved picks and public-signup rollout
 
+## Local-first v2 release — October 4, 2026
+
+The verified local-account preview is at `http://127.0.0.1:5174/#picks`. New immutable snapshots
+cover rebounds, spreads, moneylines and totals, with optional model metadata, notes
+and Pending/Win/Loss/Push/Void results. Existing rows remain readable.
+
+The additive migration is `supabase/migrations/20261004232411_selection_snapshots_v2.sql`.
+PostgreSQL/PGlite tests verify isolation and update restrictions. **It has not been
+applied to your hosted project.** New saves against an older schema display an
+upgrade-required message instead of silently losing data.
+
+Real local account acceptance passed October 5 using persistent Docker/Supabase.
+The separate preview is `http://127.0.0.1:5174/#picks`; use `npm run dev:local-account`
+from `frontend`, with `LOCAL_SUPABASE_CLI` pointing to the installed CLI. It does not
+overwrite hosted environment settings. Local accounts are separate from hosted ones.
+Real browser-storage clearing/sign-in, notes/Void, ownership and immutable-price
+checks passed. Temporary test accounts were cleaned up; your hosted accounts were untouched.
+
+Keep signup settings unchanged. Use only the local stack's public connection settings
+in ignored frontend configuration, never its service-role key. Local and hosted
+accounts are separate. The earlier hosted-demo evidence below is historical, not
+verification of v2 selections.
+
+---
+
 ## Current setup status
 
 This checkout is now connected to the existing project in the `nba-picks`

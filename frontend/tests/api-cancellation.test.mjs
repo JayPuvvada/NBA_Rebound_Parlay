@@ -150,3 +150,25 @@ test('slate envelope rejects unsafe sportsbook status and provenance fields', ()
   const odds = { available: false, error: 'Unavailable', updated_at: null };
   assert.deepEqual(unwrapCheatSheet({ ...valid, odds }).odds, odds);
 });
+
+test('side evaluation lines and probabilities are validated before rendering', () => {
+  const row = { player: 'Example', projection: 7, home_game: false };
+  const validSide = { direction: 'OVER', line: 8.5, confidence: 0.6 };
+  for (const side_evaluations of [[], { over: {} }, { over: { ...validSide, direction: 'UNDER' } },
+    { over: { ...validSide, line: {} } }, { over: { ...validSide, line: '8.5' } },
+    { over: { ...validSide, line: -1 } }, { over: { ...validSide, line: Infinity } },
+    { over: { ...validSide, confidence: 60 } }, { over: { ...validSide, confidence: '0.6' } }]) {
+    assert.throws(() => validatePredictResponse({ ...row, analysis: { side_evaluations } }), error => error.kind === 'invalid-response');
+    assert.throws(() => unwrapCheatSheet([{ ...row, side_evaluations }]), error => error.kind === 'invalid-response');
+  }
+});
+
+test('side evaluation validation supports explicit distinct lines and legacy same-line results', () => {
+  const row = { player: 'Example', projection: 7, home_game: false };
+  for (const side_evaluations of [undefined, { over: { direction: 'OVER', confidence: 0.6 } },
+    { over: { direction: 'OVER', line: 8.5, confidence: 0.6 }, under: { direction: 'UNDER', line: 9.5, confidence: 0.7 } }]) {
+    const payload = { ...row, analysis: { side_evaluations } };
+    assert.equal(validatePredictResponse(payload), payload);
+    assert.deepEqual(unwrapCheatSheet([{ ...row, side_evaluations }]).rows[0].side_evaluations, side_evaluations);
+  }
+});

@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createServer } from 'vite';
-let server, SupabaseAccount, pickInsert, supabaseConfig;
+let server, SupabaseAccount, pickInsert, supabaseConfig, buildSelectionSnapshot;
 before(async () => {
   server = await createServer({ optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' });
   ({ SupabaseAccount, pickInsert } = await server.ssrLoadModule('/src/lib/supabase-account.ts'));
   ({ supabaseConfig } = await server.ssrLoadModule('/src/lib/supabase.ts'));
+  ({ buildSelectionSnapshot } = await server.ssrLoadModule('/src/lib/personal-picks.ts'));
 });
 after(async () => { await server?.close(); });
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 const pick = { id: 'quote', player: 'Jokic', opponent: 'LAL', date: '2026-10-20', projection: 13.3,
   direction: 'OVER', line: 12.5, odds: -110, bookmaker: 'Sample', demo: true, result: 'Pending', savedAt: 'now' };
-function fakeClient() {
+function fakeClient({ legacySchema = false } = {}) {
   let user = null, callback, hold, holdWrite, failure = null;
   const rows = new Map();
   const calls = [];
@@ -34,9 +35,9 @@ function fakeClient() {
       async signOut() { emit(null); return { error: null }; },
     },
     from(table) {
-      let operation = 'select', payload, filters = {}, first = 0, last = 499;
+      let operation = 'select', payload, filters = {}, first = 0, last = 499, columns = '';
       const builder = {
-        select() { return builder; }, eq(k,v) { filters[k] = v; return builder; }, order() { return builder; },
+        select(value) { columns=value;return builder; }, eq(k,v) { filters[k] = v; return builder; }, order() { return builder; },
         range(a,b) { first=a;last=b;return builder; }, maybeSingle() { return builder; },
         insert(value) { operation='insert';payload=value;return builder; },
         update(value) { operation='update';payload=value;return builder; }, delete() { operation='delete';return builder; },
@@ -45,6 +46,7 @@ function fakeClient() {
           const owner = filters.user_id ?? payload?.user_id;
           if (failure) return Promise.resolve({ error: { message: failure }, data: null }).then(resolve, reject);
           if (table === 'app_pick_members') return Promise.resolve({ error: null, data: owner === 'blocked' ? null : { user_id: owner } }).then(resolve,reject);
+          if (legacySchema && columns.includes('version')) return Promise.resolve({error:{code:'42703',message:'column version does not exist'},data:null}).then(resolve,reject);
           let records = rows.get(owner) ?? [];
           if (operation === 'insert') {
             if (records.some(p=>p.id===payload.id)) return Promise.resolve({ error: { code:'23505', message:'duplicate' } }).then(resolve,reject);
@@ -186,6 +188,40 @@ test('signup waits for email confirmation and never treats a pending user as sig
     assert.equal(await account.save(pick),false);
     assert.equal(await account.signup('failure@example.com','a-long-test-password'),false);
     assert.match(account.getSnapshot().error,/Email delivery failed/);
+  } finally {stop();}
+});
+
+test('versioned account snapshots deduplicate by fingerprint, persist notes and Void, and tolerate mixed rows', async () => {
+  const quote={market:'h2h',selection:'Denver',line:null,odds:-110,book:'FanDuel'};
+  const context={date:'2026-10-05',home:'Denver',away:'LA',sport:'basketball_nba'};
+  const fake=fakeClient(),account=new SupabaseAccount(fake.client),stop=account.start();
+  try {
+    await account.login('alice@example.com','valid');
+    const snapshot=buildSelectionSnapshot(quote,context);
+    assert.equal(await account.save(snapshot),true);
+    assert.equal(await account.save(buildSelectionSnapshot(quote,context)),true);
+    assert.equal(account.getSnapshot().picks.length,1);
+    await account.notes(snapshot.id,'=personal note'); await account.grade(snapshot.id,'Void');
+    await account.logout(); await account.login('alice@example.com','valid');
+    assert.equal(account.getSnapshot().picks[0].notes,'=personal note');
+    assert.equal(account.getSnapshot().picks[0].result,'Void');
+    fake.rows.get('alice').push({...pick,id:'old',result:'Win'},{...snapshot,version:99});
+    await account.refresh();
+    assert.equal(account.getSnapshot().picks.length,2);
+    assert.match(account.getSnapshot().error,/1 saved record/);
+    const payload=pickInsert({...snapshot,result:'Win',savedAt:'forged',notes:'forged'},'alice');
+    assert.equal(payload.version,2); assert.equal(payload.notes,undefined); assert.equal(payload.result,undefined); assert.equal(payload.savedAt,undefined);
+  } finally {stop();}
+});
+test('unmigrated database displays legacy rows and explicitly refuses new snapshot saves', async () => {
+  const fake=fakeClient({legacySchema:true});fake.rows.set('alice',[{...pick,result:'Win'}]);
+  const account=new SupabaseAccount(fake.client),stop=account.start();
+  try {
+    await account.login('alice@example.com','valid');
+    assert.equal(account.getSnapshot().picks[0].result,'Win');
+    assert.match(account.getSnapshot().error,/database upgrade/);
+    assert.equal(await account.save(buildSelectionSnapshot({market:'h2h',selection:'Denver',line:null,odds:-110,book:'FanDuel'},{date:'2026-10-05',home:'Denver',away:'LA',sport:'basketball_nba'})),false);
+    assert.equal(fake.calls.filter(c=>c.operation==='insert').length,0);
   } finally {stop();}
 });
 

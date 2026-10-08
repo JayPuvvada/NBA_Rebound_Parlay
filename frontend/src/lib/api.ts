@@ -79,6 +79,20 @@ function validOddsStatus(value: unknown): boolean {
     && optionalBoolean(value.available) && optionalBoolean(value.fresh));
 }
 
+function validSideEvaluations(value: unknown): boolean {
+  if (value == null) return true;
+  if (!isRecord(value)) return false;
+  return (['over', 'under'] as const).every(side => {
+    const evaluation = value[side];
+    if (evaluation == null) return true;
+    return isRecord(evaluation) && evaluation.direction === side.toUpperCase()
+      && (evaluation.line == null || (typeof evaluation.line === 'number'
+        && Number.isFinite(evaluation.line) && evaluation.line >= 0))
+      && (evaluation.confidence == null || (typeof evaluation.confidence === 'number'
+        && Number.isFinite(evaluation.confidence) && evaluation.confidence >= 0 && evaluation.confidence <= 1));
+  });
+}
+
 export function validateGamesResponse(value: unknown): GamesResponse {
   const team = (candidate: unknown): candidate is string =>
     typeof candidate === 'string' && /^[A-Z]{2,3}$/.test(candidate);
@@ -86,6 +100,7 @@ export function validateGamesResponse(value: unknown): GamesResponse {
     !isRecord(game) || !team(game.home) || !team(game.away) || game.home === game.away
     || (game.is_preseason !== undefined && typeof game.is_preseason !== 'boolean')
     || ['id', 'game_id'].some(key => game[key] !== undefined && typeof game[key] !== 'string')
+    || ['start_time', 'game_time', 'status_text'].some(key => game[key] !== undefined && game[key] !== null && typeof game[key] !== 'string')
   ) || (value.message !== undefined && typeof value.message !== 'string')) {
     throw new ApiRequestError('The schedule response contained invalid game data. Please retry.', 'invalid-response');
   }
@@ -96,7 +111,8 @@ export function validatePredictResponse(value: unknown): PredictResponse {
   if (!isRecord(value) || typeof value.player !== 'string' || !value.player.trim()
     || typeof value.projection !== 'number' || !Number.isFinite(value.projection)
     || value.projection < 0 || typeof value.home_game !== 'boolean'
-    || !validProjectionContext(value) || !validProvenance(value)) {
+    || !validProjectionContext(value) || !validProvenance(value)
+    || (value.analysis != null && (!isRecord(value.analysis) || !validSideEvaluations(value.analysis.side_evaluations)))) {
     throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
   }
   return value as unknown as PredictResponse;
@@ -193,7 +209,7 @@ export function unwrapCheatSheet(response: CheatSheetResponse): {
   if (!Array.isArray(rows) || rows.some(row =>
     !isRecord(row) || typeof row.player !== 'string' || !row.player.trim()
     || typeof row.projection !== 'number' || !Number.isFinite(row.projection) || row.projection < 0
-    || !validProjectionContext(row) || !validProvenance(row)
+    || !validProjectionContext(row) || !validProvenance(row) || !validSideEvaluations(row.side_evaluations)
   )) {
     throw new ApiRequestError('The projection response contained missing or invalid player data. Please retry.', 'invalid-response');
   }

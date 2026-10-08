@@ -7,6 +7,18 @@ from scripts.check_preseason import summarize, aggregate_reports, audit_player, 
 
 
 class PreseasonAuditTests(unittest.TestCase):
+    def test_scenario_audit_uses_regular_only_history(self):
+        loader = MagicMock()
+        loader.get_player_id.return_value = 1
+        loader.get_preseason_player_gamelog.return_value = pd.DataFrame()
+        loader.get_regular_player_gamelog.return_value = pd.DataFrame()
+        loader.get_data_source_metadata.return_value = {}
+        with patch('scripts.check_preseason.NBADataLoader',return_value=loader):
+            report = audit_player('Example','2025-10-18',True,scenario_profile=True)
+        loader.get_regular_player_gamelog.assert_called_once_with(1,as_of='2025-10-18')
+        loader.get_player_gamelog.assert_not_called()
+        self.assertEqual(report['prior_scope'],'regular_season')
+
     def test_player_names_are_deduplicated_before_source_requests(self):
         self.assertEqual(unique_players([' Nikola   Jokic ', 'nikola jokic', 'Nikola Jokić', 'Stephen Curry']),
                          ['Nikola Jokic', 'Stephen Curry'])

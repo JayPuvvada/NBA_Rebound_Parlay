@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlayerDetailPanel } from "@/components/ui/PlayerDetailPanel";
+import { PreseasonAnalysis } from "@/components/ui/PreseasonAnalysis";
 import { Loader2 } from "lucide-react";
 import { ApiRequestError, fetchJson, unwrapCheatSheet, validateGamesResponse } from "@/lib/api";
 import { easternToday, formatAmericanOdds, formatPercent, formatSignedPercent, formatTimestamp } from "@/lib/format";
@@ -69,7 +70,7 @@ export function CheatSheet() {
   }, [date, gamesRetry]);
 
   useEffect(() => {
-    if (!selectedGame) return;
+    if (!selectedGame || selectedGame.is_preseason) return;
     const controller = new AbortController();
 
     const loadSheet = async () => {
@@ -115,7 +116,9 @@ export function CheatSheet() {
   };
 
   const selectGame = (game: Game) => {
+    if (selectedGame === game) return;
     setSelectedGame(game);
+    setLoading(false);
     setData(null);
     setWarnings([]);
     setSheetError(null);
@@ -209,16 +212,16 @@ export function CheatSheet() {
       <CardHeader className="border-b border-zinc-800 pb-6">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
           <div>
-            <CardTitle className="flex items-center gap-2 text-2xl font-bold">Daily Edge · Rebound Props</CardTitle>
-            <CardDescription className="mt-1 text-zinc-400">Choose a game and sportsbook. Compare rebound lines, then expand a player for both sides and key risks.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-2xl font-bold">{selectedGame?.is_preseason ? 'Preseason · Player Research' : 'Daily Edge · Rebound Props'}</CardTitle>
+            <CardDescription className="mt-1 text-zinc-400">{selectedGame?.is_preseason ? 'Real player history and optional minutes scenarios. Analysis only—no preseason betting picks.' : 'Choose a game and sportsbook. Compare rebound lines, then expand a player for both sides and key risks.'}</CardDescription>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <div>
+            {!selectedGame?.is_preseason && <div>
               <label htmlFor="edge-book" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Sportsbook</label>
               <select id="edge-book" value={book} onChange={(event) => setBook(event.target.value as (typeof BOOKMAKERS)[number]["key"])} className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                 {BOOKMAKERS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
               </select>
-            </div>
+            </div>}
             <div>
               <label htmlFor="edge-date" className="mb-1 block text-xs uppercase tracking-wider text-zinc-500">Game date</label>
               <input id="edge-date" type="date" value={date} onChange={(event) => changeDate(event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
@@ -257,8 +260,7 @@ export function CheatSheet() {
           <div className="flex h-64 w-full flex-col items-center justify-center text-zinc-500"><span className="mb-3 text-4xl" aria-hidden="true">📊</span><p>Select a game above to see projections.</p></div>
         )}
 
-        {selectedGame?.is_preseason && <p className="mb-4 rounded border border-amber-800 p-3 text-sm text-amber-200">Preseason: this model has not been validated for preseason rotations or minutes. Any available projections are analysis-only; new-season history may be empty.</p>}
-        {loading ? (
+        {selectedGame?.is_preseason ? <PreseasonAnalysis key={`${date}:${selectedGame.home}:${selectedGame.away}`} date={date} home={selectedGame.home} away={selectedGame.away} /> : loading ? (
           <div className="flex h-64 w-full flex-col items-center justify-center text-center text-zinc-400" role="status"><Loader2 className="mb-4 h-8 w-8 animate-spin text-emerald-500" aria-hidden="true" /><p>Loading player data and available sportsbook prices…</p><p className="mt-2 text-xs text-zinc-600">First loads can be slow. Availability depends on the data providers.</p></div>
         ) : sheetError ? (
           <div className="rounded-md border border-red-900/50 bg-red-950/20 p-4 text-red-400" role="alert">

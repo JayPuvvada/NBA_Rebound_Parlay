@@ -256,6 +256,10 @@ class NBADataLoader:
     ESPN_SCOREBOARD_URL = (
         'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'
     )
+    ESPN_ROSTER_URL = (
+        'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/'
+        'teams/{abbreviation}/roster'
+    )
     ESPN_ABBREVIATION_MAP = {
         'GS': 'GSW', 'NY': 'NYK', 'NO': 'NOP', 'SA': 'SAS',
         'UTAH': 'UTA', 'WSH': 'WAS',
@@ -488,15 +492,22 @@ class NBADataLoader:
             except Exception as e:
                 # Endpoint schema/argument errors do not mean the entire host
                 # is down. Only connectivity or blocking/server HTTP failures
-                # should suspend other, potentially healthy endpoints.
+                # should suspend this endpoint; other endpoints remain usable.
                 transport_failure = isinstance(e, (ConnectionError, Timeout, TimeoutError))
+                blocked = False
                 if isinstance(e, HTTPError) and e.response is not None:
-                    transport_failure = e.response.status_code in {403, 429} or e.response.status_code >= 500
+                    blocked = e.response.status_code in {403, 429}
+                    transport_failure = blocked or e.response.status_code >= 500
                 log.debug("API attempt %s/%s for %s failed: %s", attempt + 1, max_retries, func_name, type(e).__name__)
                 if not transport_failure:
                     raise
-                if attempt == max_retries - 1:
-                    self._nba_endpoint_unavailable_until[endpoint_key] = time.monotonic() + 30
+                # Record failure before retry backoff: a depleted request budget
+                # must not make the next request immediately probe it again.
+                # A successful retry clears this marker above.
+                self._nba_endpoint_unavailable_until[endpoint_key] = time.monotonic() + 30
+                # Blocking/rate limiting is not a transient connection failure.
+                # Retrying within the same request only increases provider load.
+                if blocked or attempt == max_retries - 1:
                     raise
 
     def set_request_budget(self, seconds=None):
@@ -768,6 +779,92 @@ class NBADataLoader:
         frame.attrs['total_rebounds_only'] = True
         return frame
 
+    def _espn_preseason_player_gamelog(self, player_id, season, as_of=None, *, regular_only=False):
+        """Use only an explicitly identified preseason, never the regular log."""
+        _, payload = self._espn_player_resource(player_id, 'gamelog', season)
+        names, groups, events = payload.get('names'), payload.get('seasonTypes'), payload.get('events')
+        if (
+            not isinstance(names, list) or not all(isinstance(name, str) for name in names)
+            or len(set(names)) != len(names)
+            or not {'minutes', 'totalRebounds'}.issubset(names)
+            or not isinstance(groups, list) or not isinstance(events, dict)
+        ):
+            # In particular, ESPN sometimes returns only league filters when
+            # there is no log. That does not confirm an empty requested season.
+            raise DataUnavailableError('ESPN did not provide verifiable preseason history')
+        permitted_groups = ({f'{season} regular season'} if regular_only else
+                            {f'{season} preseason', f'{season} pre season'})
+        matching_groups = [
+            group for group in groups if isinstance(group, dict)
+            and str(group.get('displayName') or '').strip().lower()
+            in permitted_groups
+        ]
+        if not matching_groups:
+            raise DataUnavailableError('ESPN did not identify the requested preseason')
+
+        rows = {}
+        for group in matching_groups:
+            categories = group.get('categories')
+            if not isinstance(categories, list):
+                raise DataUnavailableError('ESPN preseason categories are malformed')
+            for category in categories:
+                if not isinstance(category, dict) or not isinstance(category.get('events'), list):
+                    raise DataUnavailableError('ESPN preseason game list is malformed')
+                for item in category['events']:
+                    if not isinstance(item, dict) or not isinstance(item.get('eventId'), str) or not item['eventId']:
+                        raise DataUnavailableError('ESPN preseason game identity is missing')
+                    event_id, values = item['eventId'], item.get('stats')
+                    if not isinstance(values, list) or len(values) != len(names):
+                        raise DataUnavailableError('ESPN preseason statistics are malformed')
+                    stats = dict(zip(names, values))
+                    rebounds = _finite_number(stats['totalRebounds'], None, minimum=0)
+                    minutes = _finite_number(stats['minutes'], None, minimum=0)
+                    if (isinstance(stats['totalRebounds'], bool) or isinstance(stats['minutes'], bool)
+                            or rebounds is None or not rebounds.is_integer() or minutes is None):
+                        raise DataUnavailableError('ESPN preseason minutes or rebounds are invalid')
+                    event = events.get(event_id)
+                    if not isinstance(event, dict):
+                        raise DataUnavailableError('ESPN preseason event details are missing')
+                    try:
+                        game_time = datetime.fromisoformat(str(event.get('gameDate')).replace('Z', '+00:00'))
+                        if game_time.tzinfo is None:
+                            raise ValueError('missing timezone')
+                        local_date = game_time.astimezone(ZoneInfo('America/New_York')).date()
+                        end_year = self._espn_season_year(season)
+                        if not date(end_year - 1, 9, 1) <= local_date < date(end_year, 9, 1):
+                            raise ValueError('event is outside the requested season')
+                        game_date = local_date.isoformat()
+                    except ValueError as exc:
+                        raise DataUnavailableError('ESPN preseason event date is invalid') from exc
+                    team, opponent = event.get('team'), event.get('opponent')
+                    if (
+                        not isinstance(team, dict) or not isinstance(opponent, dict)
+                        or not isinstance(team.get('abbreviation'), str)
+                        or not isinstance(opponent.get('abbreviation'), str)
+                        or not isinstance(event.get('atVs'), str)
+                    ):
+                        raise DataUnavailableError('ESPN preseason matchup is missing')
+                    abbreviation = self._normalize_espn_abbreviation(team.get('abbreviation'))
+                    opponent_abbreviation = self._normalize_espn_abbreviation(opponent.get('abbreviation'))
+                    team_id = self.get_team_id(abbreviation)
+                    if team_id is None or not opponent_abbreviation or event.get('atVs') not in {'@', 'vs'}:
+                        raise DataUnavailableError('ESPN preseason matchup is invalid')
+                    separator = '@' if event['atVs'] == '@' else 'vs.'
+                    row = {
+                        'GAME_ID': event_id, 'GAME_DATE': game_date,
+                        'MATCHUP': f'{abbreviation} {separator} {opponent_abbreviation}',
+                        'TEAM_ID': team_id, 'MIN': minutes, 'REB': rebounds,
+                    }
+                    if event_id in rows and rows[event_id] != row:
+                        raise DataUnavailableError('ESPN preseason contains conflicting game data')
+                    rows[event_id] = row
+        frame = self._prepare_gamelog(pd.DataFrame(
+            list(rows.values()), columns=['GAME_ID', 'GAME_DATE', 'MATCHUP', 'TEAM_ID', 'MIN', 'REB'],
+        ), as_of)
+        self.mark_data_degraded('Scoped history came from ESPN; total rebounds only, for experimental analysis.')
+        frame.attrs.update({'total_rebounds_only': True, 'source': 'espn'})
+        return frame
+
     @staticmethod
     def _prepare_gamelog(df, as_of=None):
         """Normalize date order and enforce the pre-game as-of cutoff."""
@@ -833,18 +930,51 @@ class NBADataLoader:
 
         return self._prepare_gamelog(df, as_of)
 
-    @_source_cache(seconds=300)
+    @_source_cache(seconds=300, cache_empty=True)
+    def get_regular_player_gamelog(self, player_id, as_of=None):
+        """Explicit loader season, regular competition only, then pregame cutoff.
+
+        Unlike the legacy combined log, ``as_of`` never changes this loader's
+        season. This makes prior-season requests safe at the season boundary.
+        """
+        if (isinstance(player_id, bool) or not isinstance(player_id, Real)
+                or not math.isfinite(float(player_id)) or int(player_id) != player_id or player_id <= 0):
+            raise ValueError('player_id must be a positive integer')
+        try:
+            response = self._retry_api_call(
+                playergamelog.PlayerGameLog, player_id=int(player_id), season=self.season,
+                season_type_all_star='Regular Season', date_to_nullable=_date_to_parameter(as_of),
+            )
+            frame = self._prepare_gamelog(self._first_frame(response, 'regular player history'), as_of)
+            frame.attrs['source'] = 'stats.nba.com'
+        except RequestBudgetExceeded:
+            raise
+        except Exception:
+            frame = self._espn_preseason_player_gamelog(
+                int(player_id), self.season, as_of, regular_only=True,
+            )
+        frame.attrs['season_type'] = 'Regular Season'
+        return frame
+
+    @_source_cache(seconds=300, cache_empty=True)
     def get_preseason_player_gamelog(self, player_id, as_of=None):
         """Separate diagnostic history; never merge into regular-season caches."""
         if isinstance(player_id, bool) or not isinstance(player_id, Real) or not math.isfinite(float(player_id)) or int(player_id) != player_id or player_id <= 0:
             raise ValueError('player_id must be a positive integer')
         season = _season_for_date(as_of) if as_of else self.season
-        response = self._retry_api_call(
-            playergamelog.PlayerGameLog, player_id=int(player_id), season=season,
-            season_type_all_star='Pre Season', date_to_nullable=_date_to_parameter(as_of),
-        )
-        frame = self._first_frame(response, 'preseason player history')
-        frame = self._prepare_gamelog(frame, as_of)
+        try:
+            response = self._retry_api_call(
+                playergamelog.PlayerGameLog, player_id=int(player_id), season=season,
+                season_type_all_star='Pre Season', date_to_nullable=_date_to_parameter(as_of),
+            )
+            frame = self._first_frame(response, 'preseason player history')
+            frame = self._prepare_gamelog(frame, as_of)
+            frame.attrs['source'] = 'stats.nba.com'
+        except RequestBudgetExceeded:
+            raise
+        except Exception as exc:
+            log.warning('NBA preseason history unavailable for %s; trying ESPN: %s', player_id, type(exc).__name__)
+            frame = self._espn_preseason_player_gamelog(int(player_id), season, as_of)
         frame.attrs['season_type'] = 'Pre Season'
         frame.attrs['analysis_only'] = True
         return frame
@@ -1015,7 +1145,7 @@ class NBADataLoader:
             self.mark_data_degraded('player identity came from ESPN season statistics; current roster is unverified')
         return df
 
-    def get_team_roster(self, team_id, season=None):
+    def get_team_roster(self, team_id, season=None, *, timeout=30):
         """Fetch a roster for the requested season (current season by default)."""
         from nba_api.stats.endpoints import commonteamroster
         season = season or self.season
@@ -1031,12 +1161,124 @@ class NBADataLoader:
         
         roster = self._retry_api_call(
             commonteamroster.CommonTeamRoster,
-            team_id=team_id, season=season, timeout=30
+            team_id=team_id, season=season, timeout=timeout
         )
         df = roster.get_data_frames()[0]
         self._set_cache(key, df)
         self._cache_loaded_at[key] = time.monotonic()
         return df
+
+    def get_analysis_roster(self, team_id, season=None):
+        """Return an explicitly sourced roster for analysis, never betting approval.
+
+        ESPN's roster is current, not a historical membership record. Only the
+        current season may use it, and ESPN athlete IDs are never used as NBA IDs.
+        """
+        from nba_api.stats.static import teams
+
+        if isinstance(team_id, bool) or not isinstance(team_id, (int, str)):
+            raise ValueError('team_id must identify an NBA team')
+        try:
+            team_id = int(team_id)
+        except ValueError as exc:
+            raise ValueError('team_id must identify an NBA team') from exc
+        team = next((item for item in teams.get_teams() if item['id'] == team_id), None)
+        if team is None:
+            raise ValueError('team_id must identify an NBA team')
+        season = season or self.season
+        self._espn_season_year(season)
+        return self._analysis_roster(team_id, season, team['abbreviation'])
+
+    @_source_cache(300)
+    def _analysis_roster(self, team_id, season, abbreviation):
+        try:
+            frame = self.get_team_roster(team_id, season=season, timeout=8)
+            if (
+                not isinstance(frame, pd.DataFrame) or frame.empty
+                or not {'PLAYER_ID', 'PLAYER'}.issubset(frame.columns)
+                or not frame.columns.is_unique
+            ):
+                raise DataUnavailableError('NBA roster is empty or malformed')
+            roster = {}
+            for row in frame.to_dict('records'):
+                value, name = row['PLAYER_ID'], row['PLAYER']
+                if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                    raise DataUnavailableError('NBA roster contains an invalid player ID')
+                try:
+                    numeric_id = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise DataUnavailableError('NBA roster contains an invalid player ID') from exc
+                if not math.isfinite(numeric_id) or not numeric_id.is_integer() or not 0 < numeric_id <= 2**53:
+                    raise DataUnavailableError('NBA roster contains an invalid player ID')
+                if not isinstance(name, str) or not name.strip():
+                    raise DataUnavailableError('NBA roster contains an invalid player name')
+                player_id, name = int(numeric_id), name.strip()
+                if player_id in roster and roster[player_id]['name'] != name:
+                    raise DataUnavailableError('NBA roster contains conflicting player identities')
+                roster[player_id] = {'player_id': player_id, 'name': name}
+            return {
+                'players': list(roster.values()), 'source': 'stats.nba.com',
+                'season': season, 'limitations': [], 'unmatched_count': 0,
+            }
+        except RequestBudgetExceeded:
+            raise
+        except Exception as exc:
+            if season != current_season():
+                raise DataUnavailableError(
+                    'Historical NBA roster unavailable; a current roster cannot replace it'
+                ) from exc
+            log.warning('NBA analysis roster unavailable for %s; trying ESPN: %s', team_id, type(exc).__name__)
+
+        espn_abbreviation = next(
+            (key for key, value in self.ESPN_ABBREVIATION_MAP.items() if value == abbreviation),
+            abbreviation,
+        ).lower()
+        response = self._retry_http_get(
+            self.ESPN_ROSTER_URL.format(abbreviation=espn_abbreviation),
+            timeout=6, max_retries=1,
+        )
+        payload = self._espn_json(response, 'ESPN roster')
+        team, season_info = payload.get('team'), payload.get('season')
+        if (
+            not isinstance(team, dict)
+            or self._normalize_espn_abbreviation(team.get('abbreviation')) != abbreviation
+            or not isinstance(season_info, dict)
+            or isinstance(season_info.get('year'), bool)
+            or season_info.get('year') != self._espn_season_year(season)
+        ):
+            raise DataUnavailableError('ESPN roster does not match the requested team and season')
+        athletes = payload.get('athletes')
+        if not isinstance(athletes, list) or not athletes:
+            raise DataUnavailableError('ESPN roster is empty or malformed')
+
+        from nba_api.stats.static import players
+        names = {}
+        for player in players.get_players():
+            name = ' '.join(normalize_name(player['full_name']).split())
+            names.setdefault(name, set()).add(player['id'])
+        roster, unmatched = {}, 0
+        for athlete in athletes:
+            name = athlete.get('fullName') if isinstance(athlete, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                unmatched += 1
+                continue
+            matches = names.get(' '.join(normalize_name(name).split()), set())
+            if len(matches) != 1:
+                unmatched += 1
+                continue
+            player_id = next(iter(matches))
+            roster[player_id] = {'player_id': player_id, 'name': name.strip()}
+        if not roster:
+            raise DataUnavailableError('ESPN roster could not be matched safely to NBA player IDs')
+        limitations = ['Current roster came from ESPN because NBA roster data was unavailable; team membership is not NBA-verified.']
+        if unmatched:
+            limitations.append(f'{unmatched} roster entries could not be matched uniquely to NBA player IDs and were omitted.')
+        for limitation in limitations:
+            self.mark_data_degraded(limitation, source='espn')
+        return {
+            'players': list(roster.values()), 'source': 'espn', 'season': season,
+            'limitations': limitations, 'unmatched_count': unmatched,
+        }
 
     def get_player_advanced_stats(self, player_id, as_of=None):
         """Fetches Advanced stats (REB_PCT etc) for a player"""
@@ -1138,7 +1380,18 @@ class NBADataLoader:
         last_error = None
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=self._bounded_timeout(timeout))
+                send = lambda: requests.get(url, params=params, headers=headers, timeout=self._bounded_timeout(timeout))
+                if url.startswith('https://api.the-odds-api.com/v4/') and url.split('?')[0].endswith('/odds'):
+                    from src.odds_budget import metered_request
+                    values = params or {}
+                    markets = {item for item in str(values.get('markets') or 'h2h').split(',') if item}
+                    books = {item for item in str(values.get('bookmakers') or '').split(',') if item}
+                    regions = {item for item in str(values.get('regions') or 'us').split(',') if item}
+                    groups = math.ceil(len(books) / 10) if books else len(regions)
+                    response = metered_request(send, values.get('apiKey', ''), len(markets) * groups,
+                                               timeout_for=self._bounded_timeout)
+                else:
+                    response = send()
                 if response.status_code == 200:
                     return response
                 last_error = ProviderHTTPError(response.status_code)
@@ -1148,6 +1401,8 @@ class NBADataLoader:
             except RequestBudgetExceeded:
                 raise
             except Exception as exc:
+                if getattr(exc, 'code', None) in {'budget_limit', 'request_in_progress'}:
+                    raise
                 last_error = exc
             if attempt < max_retries - 1:
                 self._budget_sleep(0.25 * (2 ** attempt) + random.uniform(0.0, 0.1))
@@ -1568,6 +1823,7 @@ class NBADataLoader:
                     or status_type.get('description')
                 ),
                 'game_time': status_type.get('shortDetail'),
+                'start_time': event.get('date') or competition.get('date'),
                 'game_date_est': event_date,
                 'source': 'espn',
                 'is_preseason': (event.get('season') or {}).get('type') == 1,
@@ -1669,10 +1925,10 @@ class NBADataLoader:
         return self._fetch_games_for_date(date_str)
 
     @ttl_cache(seconds=60, cache_empty=True)
-    def _get_odds_events(self, api_key):
+    def _get_odds_events(self, api_key, sport_key='basketball_nba'):
         """Share event discovery across games/books, never cache failed responses."""
         resp = self._retry_http_get(
-            'https://api.the-odds-api.com/v4/sports/basketball_nba/events',
+            f'https://api.the-odds-api.com/v4/sports/{sport_key}/events',
             params={'apiKey': api_key, 'regions': 'us'}, timeout=12,
         )
         try:
@@ -1684,7 +1940,7 @@ class NBADataLoader:
         return events
 
     @ttl_cache(seconds=300)
-    def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel'):
+    def get_odds_for_game(self, api_key, home_team_code, away_team_code, date_str, bookmaker='fanduel', *, sport_key='basketball_nba'):
         """
         Targeted Odds Fetch:
         1. Get ALL events for the date (cheap/free-ish).
@@ -1693,6 +1949,8 @@ class NBADataLoader:
         """
         if not isinstance(api_key, str) or not api_key.strip():
             return {}
+        if sport_key not in {'basketball_nba', 'basketball_nba_preseason'}:
+            raise ValueError('Unsupported NBA odds sport')
         requested_date = _parse_iso_date(date_str)
         home_team_code = str(home_team_code or '').strip().upper()
         away_team_code = str(away_team_code or '').strip().upper()
@@ -1701,7 +1959,7 @@ class NBADataLoader:
             raise ValueError("home team, away team, and bookmaker are required")
 
         log.debug(f"Deep-searching odds for {home_team_code} vs {away_team_code} on {bookmaker}...")
-        events = self._get_odds_events(api_key)
+        events = self._get_odds_events(api_key, sport_key)
 
         team_map = {
             'ATL': 'Hawks', 'BOS': 'Celtics', 'BKN': 'Nets', 'CHA': 'Hornets', 'CHI': 'Bulls',
@@ -1744,7 +2002,7 @@ class NBADataLoader:
         target_event_id = target_event['id']
         log.debug(f"Found Event ID {target_event_id}. Fetching props from {bookmaker}...")
         props_url = (
-            "https://api.the-odds-api.com/v4/sports/basketball_nba/events/"
+            f"https://api.the-odds-api.com/v4/sports/{sport_key}/events/"
             f"{target_event_id}/odds"
         )
         props_params = {

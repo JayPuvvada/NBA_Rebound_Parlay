@@ -83,6 +83,17 @@ class MissingEligibilityEngineer(FakeEngineer):
         return result
 
 
+class ConflictingSafetyEngineer(FakeEngineer):
+    def __init__(self, change):
+        super().__init__()
+        self.change = change
+
+    def compute_composite_projection(self, *args, **kwargs):
+        result = super().compute_composite_projection(*args, **kwargs)
+        result.update(self.change)
+        return result
+
+
 class ProjectionErrorEngineer(FakeEngineer):
     def compute_composite_projection(self, player_id, opponent, **kwargs):
         self.calls.append((player_id, opponent, kwargs))
@@ -268,6 +279,39 @@ class CheatSheetContractTest(unittest.TestCase):
         self.assertEqual(row["kelly_fraction"], 0)
         self.assertIsNotNone(row["under_probability"])
         self.assertEqual(row["limitations"], ["historical injury status is unavailable"])
+
+    def test_conflicting_safety_flags_block_issuance_and_preserve_warnings(self):
+        for change in (
+            {'prediction_eligible': False, 'limitations': ['source restriction']},
+            {'data_freshness': {'prediction_eligible': False, 'limitations': ['source restriction']}},
+            {'data_freshness': {'prediction_eligible': True, 'projection_inputs': {
+                'status': 'degraded', 'limitations': ['source restriction']}}},
+        ):
+            with self.subTest(change=change):
+                ledger = FakeLedger()
+                row = _run({'value player': {'under': {'line': 8.5, 'odds': 110}}},
+                           engineer=ConflictingSafetyEngineer(change), ledger=ledger, record=True)[0]
+                self.assertFalse(row['prediction_eligible'])
+                self.assertFalse(row['actionable'])
+                self.assertIsNone(row['direction'])
+                self.assertIn('source restriction', row['limitations'])
+                if row['data_freshness'] is not None:
+                    self.assertFalse(row['data_freshness']['prediction_eligible'])
+                self.assertEqual(ledger.records, [])
+
+    def test_malformed_safety_context_preserves_diagnostic_row_without_recording(self):
+        for field in ('metadata', 'data_freshness'):
+            for value in ('bad', [], 1):
+                with self.subTest(field=field, value=value):
+                    ledger = FakeLedger()
+                    rows = _run({'value player': {'under': {'line': 8.5, 'odds': 110}}},
+                                engineer=ConflictingSafetyEngineer({field: value}),
+                                ledger=ledger, record=True)
+                    self.assertEqual(len(rows), 1)
+                    self.assertFalse(rows[0]['prediction_eligible'])
+                    self.assertFalse(rows[0]['actionable'])
+                    self.assertTrue(rows[0]['limitations'])
+                    self.assertEqual(ledger.records, [])
 
     def test_missing_safety_metadata_fails_closed(self):
         ledger = FakeLedger()

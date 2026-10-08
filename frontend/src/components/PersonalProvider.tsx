@@ -28,7 +28,7 @@ export function PersonalProvider({ children }: { children: ReactNode }) {
   };
 
   return <PersonalContext.Provider value={{
-    picks, signedIn, error,
+    mode: "demo", username: "jay", picks, signedIn, error,
     login: (username, password) => {
       if (!demoCredentials(username, password)) return false;
       try {
@@ -42,7 +42,8 @@ export function PersonalProvider({ children }: { children: ReactNode }) {
       try { window.sessionStorage.removeItem(SESSION_KEY); }
       catch { setError("Could not clear the browser session marker. This is a demo, not a secure account."); }
     },
-    save: pick => persist(picks.some(p => p.id === pick.id) ? picks : [pick, ...picks]),
+    save: pick => persist(picks.some(p => p.id === pick.id || pick.fingerprint && p.fingerprint === pick.fingerprint) ? picks : [{...pick, demo: true}, ...picks]),
+    notes: (id, notes) => { persist(picks.map(p => p.id === id ? { ...p, notes: notes.slice(0, 5000) } : p)); },
     remove: id => { persist(picks.filter(p => p.id !== id)); },
     grade: (id, result) => { persist(picks.map(p => p.id === id ? { ...p, result } : p)); },
   }}>{children}</PersonalContext.Provider>;

@@ -9,7 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from src.data_loader import NBADataLoader, _parse_iso_date
-from src.features import _clean_minutes
+from src.preseason_analysis import _observed_minutes
 from src.utils import current_season, normalize_name
 
 
@@ -32,9 +32,9 @@ def summarize(frame):
         return {'status': 'empty', 'games': 0}
     if not {'MIN', 'REB'}.issubset(frame.columns):
         return {'status': 'missing_columns', 'games': len(frame)}
-    minutes = frame['MIN'].apply(_clean_minutes)
-    rebounds = pd.to_numeric(frame['REB'], errors='coerce')
-    valid = minutes.gt(0) & rebounds.ge(0) & minutes.le(60) & rebounds.le(100)
+    minutes = frame['MIN'].apply(_observed_minutes)
+    rebounds = pd.to_numeric(frame['REB'].map(lambda value: None if isinstance(value, bool) else value), errors='coerce')
+    valid = minutes.gt(0) & rebounds.ge(0) & minutes.le(60) & rebounds.le(100) & rebounds.mod(1).eq(0)
     if not valid.any():
         return {'status': 'no_usable_appearances', 'games': 0}
     return {'status': 'available', 'games': int(valid.sum()),
@@ -43,7 +43,7 @@ def summarize(frame):
             'rebounds_per_minute': round(float(rebounds[valid].sum() / minutes[valid].sum()), 4)}
 
 
-def audit_player(player, date, evaluate=False):
+def audit_player(player, date, evaluate=False, *, scenario_profile=False):
     day = _parse_iso_date(date)
     season = current_season(day)
     year = int(season[:4])
@@ -51,6 +51,7 @@ def audit_player(player, date, evaluate=False):
     report = {'player': player, 'as_of': day.isoformat(), 'season': season,
               'prior_season': prior, 'analysis_only': True,
               'note': 'Separate observed samples, not a blend or preseason minutes forecast.'}
+    report['prior_scope'] = 'regular_season' if scenario_profile else 'combined_regular_playin_playoffs'
     loader = NBADataLoader(season=season)
     samples = {}
     pid = loader.get_player_id(player)
@@ -60,6 +61,7 @@ def audit_player(player, date, evaluate=False):
         source.set_request_budget(15)
         try:
             frame = (source.get_preseason_player_gamelog(pid, as_of=date) if label == 'preseason'
+                     else source.get_regular_player_gamelog(pid, as_of=date) if scenario_profile
                      else source._prepare_gamelog(source.get_player_gamelog(pid), date))
             report[label + '_history'] = {**summarize(frame), 'source': source.get_data_source_metadata()}
             samples[label] = frame
@@ -70,13 +72,13 @@ def audit_player(player, date, evaluate=False):
     if evaluate:
         if len(samples) == 2:
             from src.preseason_evaluation import evaluate_preseason
-            empty_samples = [name for name, frame in samples.items() if frame.empty]
+            empty_samples = [name for name, frame in samples.items() if frame.empty and not (scenario_profile and name == 'prior_season')]
             if empty_samples:
                 report['evaluation'] = {'status': 'empty_history', 'empty_samples': empty_samples,
                                         'analysis_only': True}
             else:
                 try:
-                    report['evaluation'] = evaluate_preseason(samples['prior_season'], samples['preseason'])
+                    report['evaluation'] = evaluate_preseason(samples['prior_season'], samples['preseason'], scenario_profile=scenario_profile)
                 except ValueError as exc:
                     report['evaluation'] = {'status': 'invalid_inputs', 'reason': str(exc),
                                             'analysis_only': True}
@@ -89,6 +91,7 @@ def aggregate_reports(reports):
     rows = [row for report in reports for row in report.get('evaluation', {}).get('games', [])]
     n = len(rows)
     evaluated_players = sum(bool(r.get('evaluation', {}).get('games')) for r in reports)
+    naive_rows = [row for row in rows if row.get('naive_prior_projection') is not None]
     unavailable = []
     for report in reports:
         evaluation = report.get('evaluation', {})
@@ -103,7 +106,8 @@ def aggregate_reports(reports):
             'unavailable_samples': unavailable,
             'players_without_evaluated_games': [r['player'] for r in reports if not r.get('evaluation', {}).get('games')],
             'mae': sum(abs(row['error']) for row in rows) / n if n else None,
-            'naive_prior_mae': sum(abs(row['naive_prior_projection'] - row['actual']) for row in rows) / n if n else None,
+            'naive_prior_mae': sum(abs(row['naive_prior_projection'] - row['actual']) for row in naive_rows) / len(naive_rows) if naive_rows else None,
+            'naive_prior_evaluated_games': len(naive_rows),
             'analysis_only': True, 'note': 'Exploratory selected-player sample, not production-model validation.'}
 
 
@@ -112,6 +116,7 @@ def main():
     parser.add_argument('--player', required=True, action='append', help='Repeat for multiple players')
     parser.add_argument('--date', required=True)
     parser.add_argument('--evaluate', action='store_true', help='Evaluate a diagnostic walk-forward baseline, not betting picks')
+    parser.add_argument('--scenario-profile', action='store_true', help='Use regular-only prior history and generator preseason thresholds/scenarios')
     args = parser.parse_args()
     try:
         date = _parse_iso_date(args.date).isoformat()
@@ -119,7 +124,7 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     load_dotenv('.env')
-    reports = [audit_player(player, date, args.evaluate) for player in players]
+    reports = [audit_player(player, date, args.evaluate, **({'scenario_profile':True} if args.scenario_profile else {})) for player in players]
     output = reports[0] if len(reports) == 1 else {'players': reports, 'aggregate': aggregate_reports(reports)}
     print(json.dumps(output, indent=2, allow_nan=False))
 

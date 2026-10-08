@@ -51,6 +51,7 @@ export interface VarianceInfo {
 
 export interface SideEvaluation {
   direction: Direction;
+  line?: number | null;
   confidence: number;
   hit_rate?: number | null;
   hit_rate_games?: number | null;
